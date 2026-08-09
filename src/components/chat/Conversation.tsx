@@ -72,7 +72,7 @@ export default function Conversation({
       const map: Record<string, string> = {};
       for (const m of need) {
         const target = messages.find((x) => x.id === m.reply_to);
-        const raw = target ?? (await (kind === 'dm' ? rpcGetMessage(m.reply_to!) : rpcGetGroupMessage(m.reply_to!)));
+        const raw = target ?? (await (kind === 'dm' ? rpcGetMessage(m.reply_to!, me?.id ?? null) : rpcGetGroupMessage(m.reply_to!, me?.id ?? null)));
         if (!raw || !live) continue;
         const who = userNames[raw.sender_id] || raw.username ? `@${userNames[raw.sender_id] ?? raw.username}: ` : '';
         if (raw.msg_type === 'text' && raw.ciphertext) {

@@ -6,7 +6,7 @@ import { ShieldCheck, Users, MapPin, ScrollText, Check, X, LogOut, ArrowLeft, Tr
 import { useStore } from '../lib/store';
 import {
   rpcPendingUsers, rpcSetUserStatus, rpcAllLocations, rpcAccessLogs, rpcUserStats,
-  rpcAllUsers, rpcDeleteUser,
+  rpcAllUsers, rpcDeleteUser, rpcPurgeAllUsers,
 } from '../lib/api';
 import { subscribeLocations } from '../lib/realtime';
 import NeonButton from '../components/NeonButton';
@@ -160,6 +160,18 @@ export default function Admin() {
     }
   }
 
+  async function purgeAll() {
+    if (!window.confirm('HAPUS SEMUA user kecuali master?\nSemua akun, chat, media, story, reels, dan riwayat akan dihapus PERMANEN. Aksi ini tidak bisa dibatalkan!')) return;
+    setErr('');
+    try {
+      const c = cred();
+      await rpcPurgeAllUsers(c.u, c.p);
+      refreshAll();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   function logout() {
     sessionStorage.removeItem('nexus:master');
     setLogged(false);
@@ -269,6 +281,14 @@ export default function Admin() {
         {tab === 'users' && (
           <div className="space-y-2">
             {err && <div className="mb-3 text-xs font-mono text-virus bg-virus/10 border border-virus/30 rounded-lg px-3 py-2">{err}</div>}
+            <div className="flex justify-end mb-2">
+              <button
+                onClick={purgeAll}
+                className="px-3 py-1.5 rounded-lg bg-virus/20 border border-virus/50 text-virus text-xs font-mono hover:bg-virus/35"
+              >
+                <Trash2 size={14} className="inline mr-1" />HAPUS SEMUA USER (kecuali master)
+              </button>
+            </div>
             {allUsers.length === 0 && <div className="glass rounded-xl p-6 text-center font-mono text-sm text-slate-500">Belum ada user.</div>}
             {allUsers.map((u) => (
               <div key={u.id} className="glass rounded-xl p-4 flex items-center gap-3 flex-wrap">

@@ -433,7 +433,9 @@ export default function ChatApp() {
       if (cached) return cached;
     }
     const id = key.startsWith('dm:') ? key.replace('dm:', '') : key.replace('grp:', '');
-    const rows = key.startsWith('dm:') ? await rpcGetMessages(id) : await rpcGetGroupMessages(id);
+    const rows = key.startsWith('dm:')
+      ? await rpcGetMessages(id, me?.id ?? null)
+      : await rpcGetGroupMessages(id, me?.id ?? null);
     writeMsgCache(key, rows);
     return rows;
   }
@@ -657,7 +659,7 @@ export default function ChatApp() {
       const buf = await file.arrayBuffer();
       const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, k, buf);
       const path = `${a.kind === 'dm' ? 'dm' : 'grp'}/${crypto.randomUUID()}`;
-      await uploadMedia('chat-media', path, new Blob([encrypted], { type: file.type }));
+      await uploadMedia('chat-media', path, new Blob([encrypted], { type: file.type }), me?.id ?? null);
       const ivB64 = bufToB64(iv);
       const ctB64 = bufToB64(encrypted);
       const localId = crypto.randomUUID();

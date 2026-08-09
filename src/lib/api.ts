@@ -151,6 +151,14 @@ export async function rpcDeleteUser(adminUser: string, adminPass: string, target
   if (error) throw new Error(normalizeErr(error.message));
 }
 
+export async function rpcPurgeAllUsers(adminUser: string, adminPass: string) {
+  const { error } = await supabase.rpc('purge_all_users_except_master', {
+    p_admin_username: adminUser,
+    p_admin_password: adminPass,
+  });
+  if (error) throw new Error(normalizeErr(error.message));
+}
+
 export async function rpcUpdatePublicKey(username: string, password: string, newPublicKey: string) {
   const { error } = await supabase.rpc('update_public_key', {
     p_username: username,
@@ -224,8 +232,11 @@ export async function rpcSendMessage(p: {
   }
 }
 
-export async function rpcGetMessages(convId: string): Promise<Msg[]> {
-  const { data, error } = await supabase.rpc('get_messages', { p_conversation_id: convId });
+export async function rpcGetMessages(convId: string, userId?: string | null): Promise<Msg[]> {
+  const { data, error } = await supabase.rpc('get_messages', {
+    p_conversation_id: convId,
+    p_user_id: userId ?? null,
+  });
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as Msg[]) ?? [];
 }
@@ -240,8 +251,8 @@ export async function rpcMarkGroupMessagesRead(userId: string, groupId: string) 
   if (error) throw new Error(normalizeErr(error.message));
 }
 
-export async function rpcGetMessage(id: string): Promise<Msg | null> {
-  const { data, error } = await supabase.rpc('get_message', { p_id: id });
+export async function rpcGetMessage(id: string, userId?: string | null): Promise<Msg | null> {
+  const { data, error } = await supabase.rpc('get_message', { p_id: id, p_user_id: userId ?? null });
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as Msg[])?.[0] ?? null;
 }
@@ -355,14 +366,17 @@ export async function rpcGroupSend(p: {
   }
 }
 
-export async function rpcGetGroupMessages(groupId: string): Promise<Msg[]> {
-  const { data, error } = await supabase.rpc('get_group_messages', { p_group_id: groupId });
+export async function rpcGetGroupMessages(groupId: string, userId?: string | null): Promise<Msg[]> {
+  const { data, error } = await supabase.rpc('get_group_messages', {
+    p_group_id: groupId,
+    p_user_id: userId ?? null,
+  });
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as Msg[]) ?? [];
 }
 
-export async function rpcGetGroupMessage(id: string): Promise<Msg | null> {
-  const { data, error } = await supabase.rpc('get_group_message', { p_id: id });
+export async function rpcGetGroupMessage(id: string, userId?: string | null): Promise<Msg | null> {
+  const { data, error } = await supabase.rpc('get_group_message', { p_id: id, p_user_id: userId ?? null });
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as Msg[])?.[0] ?? null;
 }
@@ -521,9 +535,21 @@ export async function rpcLogAccess(userId: string, event: string, ip?: string, u
 // ---------- STORAGE ----------
 const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 
-export async function uploadMedia(bucket: string, path: string, blob: Blob) {
+export async function uploadMedia(bucket: string, path: string, blob: Blob, userId?: string | null) {
   if (blob.size > MAX_UPLOAD_BYTES) {
     throw new Error('File terlalu besar — maksimal 200 MB per kirim.');
+  }
+  if (userId) {
+    try {
+      const { error } = await supabase.rpc('log_media_upload', {
+        p_user_id: userId,
+        p_bytes: blob.size,
+      });
+      if (error) throw new Error(normalizeErr(error.message));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!isFuncNotFound(msg)) throw e;
+    }
   }
   const { error } = await supabase.storage.from(bucket).upload(path, blob, {
     upsert: true,

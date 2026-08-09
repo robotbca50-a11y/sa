@@ -31,7 +31,7 @@ export default function Stories() {
   async function addStory(file: File) {
     const kind = file.type.startsWith('video/') ? 'video' : 'image';
     const path = `stories/${crypto.randomUUID()}`;
-    await uploadMedia('chat-media', path, file);
+    await uploadMedia('chat-media', path, file, me!.id);
     await rpcAddStory(me!.id, path, '', kind);
     refresh();
   }

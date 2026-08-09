@@ -35,7 +35,7 @@ export default function Reels() {
 
   async function addUpload(file: File) {
     const path = `reels/${crypto.randomUUID()}`;
-    await uploadMedia('chat-media', path, file);
+    await uploadMedia('chat-media', path, file, me!.id);
     await rpcAddReel({ userId: me!.id, source: 'upload', mediaPath: path, caption: '' });
     setShowAdd(false);
     rpcGetReels().then(setReels).catch(() => {});
