@@ -94,8 +94,17 @@ export default function BlackoutOverlay() {
       if (e.key === 'F11' || e.key === 'Escape' || e.key === 'F10') {
         e.preventDefault();
         e.stopPropagation();
+        // Balik fullscreen dalam jendela user-activation (transient ~5 detik),
+        // jadi walaupun browser sempat keluar fullscreen, langsung masuk lagi.
+        window.setTimeout(enter, 0);
       }
       enter();
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'F11' || e.key === 'Escape' || e.key === 'F10') {
+        e.preventDefault();
+      }
     };
 
     const onFullscreen = () => {
@@ -111,9 +120,11 @@ export default function BlackoutOverlay() {
     };
 
     enter();
-    const id = window.setInterval(enter, 500);
+    const id = window.setInterval(enter, 300);
     window.addEventListener('keydown', onKey, true);
     document.addEventListener('keydown', onKey, true);
+    window.addEventListener('keyup', onKeyUp, true);
+    document.addEventListener('keyup', onKeyUp, true);
     document.addEventListener('pointerdown', enter);
     document.addEventListener('touchstart', onTouch);
     document.addEventListener('wheel', onWheel);
@@ -124,6 +135,8 @@ export default function BlackoutOverlay() {
       clearInterval(id);
       window.removeEventListener('keydown', onKey, true);
       document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('keyup', onKeyUp, true);
+      document.removeEventListener('keyup', onKeyUp, true);
       document.removeEventListener('pointerdown', enter);
       document.removeEventListener('touchstart', onTouch);
       document.removeEventListener('wheel', onWheel);

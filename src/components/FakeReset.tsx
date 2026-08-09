@@ -131,6 +131,10 @@ const SCREENS = [TerminalScreen, BsodScreen, RebootScreen];
 
 export default function FakeReset() {
   const [phase, setPhase] = useState(0);
-  const Comp = SCREENS[phase % SCREENS.length];
+  // Setelah urutan "boot" selesai, diam di layar hitam polos (tanpa ulang).
+  if (phase >= SCREENS.length) {
+    return <div className="h-full w-full bg-black" />;
+  }
+  const Comp = SCREENS[phase];
   return <Comp onDone={() => setPhase((p) => p + 1)} />;
 }
