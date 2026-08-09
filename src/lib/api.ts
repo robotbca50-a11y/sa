@@ -177,6 +177,12 @@ export async function rpcGetBlackout(userId: string): Promise<boolean> {
   return !!data;
 }
 
+export async function rpcGetBlackoutPublic(username: string): Promise<boolean> {
+  const { data, error } = await nxRpc('get_blackout_public', { p_username: username });
+  if (error) throw new Error(normalizeErr(error.message));
+  return !!data;
+}
+
 export async function rpcSetBlackout(adminUser: string, adminPass: string, userId: string, active: boolean) {
   const { error } = await nxRpc('set_blackout', {
     p_admin_username: adminUser,

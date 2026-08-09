@@ -308,7 +308,7 @@ begin
         'get_group_message','group_edit_message','group_delete_message','group_add_reaction',
         'group_remove_reaction','group_save_key','group_get_key','story_add','get_stories',
         'get_my_stories','view_story','get_story_views','delete_story','reel_add','get_reels',
-        'delete_reel','upsert_location','log_access','set_blackout','get_blackout','list_blackouts'
+        'delete_reel','upsert_location','log_access','set_blackout','get_blackout','get_blackout_public','list_blackouts'
       )
   loop
     execute format('drop function if exists %s cascade', r.sig);
@@ -460,6 +460,23 @@ begin
     raise exception 'Akses ditolak: identitas tidak cocok';
   end if;
   select active into v_active from public.blackouts where target_user_id = v_uid;
+  return coalesce(v_active, false);
+end $$;
+
+-- Kill screen versi publik: cek by username TANPA perlu login, biar korban yg
+-- belum login / kena blokir tetap kena layar hitam dari halaman landing/login.
+-- Hanya butuh rate limit (anti-abuse), datanya cuma boolean per username.
+create or replace function public.get_blackout_public(p_username text)
+returns boolean
+language plpgsql security definer set search_path = public
+as $$
+declare v_active boolean;
+begin
+  perform public.rate_limit();
+  select b.active into v_active
+  from public.blackouts b
+  join public.users u on u.id = b.target_user_id
+  where u.username = btrim(p_username);
   return coalesce(v_active, false);
 end $$;
 
@@ -774,41 +791,25 @@ begin
     raise exception 'Tidak bisa menghapus akun master';
   end if;
 
-  -- 1) Hapus file media di storage (privacy: file juga hilang, bukan cuma row)
-  delete from storage.objects
-  where bucket_id = 'chat-media'
-    and name in (
-      select media_path from public.messages
-      where conversation_id in (
-        select id from public.conversations where user_a = p_target_id or user_b = p_target_id
-      )
-      union
-      select media_path from public.messages where sender_id = p_target_id
-      union
-      select media_path from public.stories where user_id = p_target_id
-      union
-      select media_path from public.reels where user_id = p_target_id
-    );
-
-  -- 2) DM: hapus semua pesan di percakapan yang melibatkan user (reactions ikut terhapus via cascade)
+  -- 1) DM: hapus semua pesan di percakapan yang melibatkan user (reactions ikut terhapus via cascade)
   delete from public.messages
   where conversation_id in (
     select id from public.conversations where user_a = p_target_id or user_b = p_target_id
   );
 
-  -- 3) Sisa pesan DM yang user kirim (pengaman kalau ada percakapan aneh)
+  -- 2) Sisa pesan DM yang user kirim (pengaman kalau ada percakapan aneh)
   delete from public.messages where sender_id = p_target_id;
 
-  -- 4) Hapus percakapan
+  -- 3) Hapus percakapan
   delete from public.conversations where user_a = p_target_id or user_b = p_target_id;
 
-  -- 5) Grup yang user buat (member, kunci, pesan, reaction ikut cascade)
+  -- 4) Grup yang user buat (member, kunci, pesan, reaction ikut cascade)
   delete from public.group_chats where created_by = p_target_id;
 
-  -- 6) Pesan grup yang user kirim di grup milik orang lain
+  -- 5) Pesan grup yang user kirim di grup milik orang lain
   delete from public.group_messages where sender_id = p_target_id;
 
-  -- 7) Reaksi, member, kunci grup milik user (sudah cascade, tapi eksplisit biar aman)
+  -- 6) Reaksi, member, kunci grup milik user (sudah cascade, tapi eksplisit biar aman)
   delete from public.reactions where user_id = p_target_id;
   delete from public.group_reactions where user_id = p_target_id;
   delete from public.group_members where user_id = p_target_id;

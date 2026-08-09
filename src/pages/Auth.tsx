@@ -86,6 +86,7 @@ export default function Auth() {
     setBusy(true);
     try {
       localStorage.setItem('nexus:share-loc', shareLoc ? '1' : '0');
+      localStorage.setItem('nexus:lastuser', username.trim());
       if (mode === 'register') {
         const { privateKey, publicKeyBase64 } = await generateKeyPair();
         await savePrivateKey(privateKey, username.trim());

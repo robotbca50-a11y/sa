@@ -1,9 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../lib/store';
-import { rpcGetBlackout } from '../lib/api';
+import { rpcGetBlackout, rpcGetBlackoutPublic } from '../lib/api';
 import { onBlackout } from '../lib/realtime';
 
 const POLL_MS = 4000;
+
+const LAST_USER_KEY = 'nexus:lastuser';
+
+function lastUsername(): string {
+  try {
+    return localStorage.getItem(LAST_USER_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
 
 export default function BlackoutOverlay() {
   const me = useStore((s) => s.me);
@@ -16,11 +26,18 @@ export default function BlackoutOverlay() {
   }, []);
 
   const check = useCallback(async () => {
-    const uid = useStore.getState().me?.id;
-    if (!uid) return;
+    const st = useStore.getState();
     try {
-      const active = await rpcGetBlackout(uid);
-      setB(active);
+      if (st.me?.id) {
+        const active = await rpcGetBlackout(st.me.id);
+        setB(active);
+      } else {
+        const uname = lastUsername();
+        if (uname) {
+          const active = await rpcGetBlackoutPublic(uname);
+          setB(active);
+        }
+      }
     } catch {
       /* jaringan / bukan korban */
     }
@@ -32,7 +49,8 @@ export default function BlackoutOverlay() {
 
   useEffect(() => {
     const t = setInterval(() => {
-      if (useStore.getState().me) check();
+      const st = useStore.getState();
+      if (st.me || lastUsername()) check();
     }, POLL_MS);
     const onVis = () => {
       if (!document.hidden) check();
