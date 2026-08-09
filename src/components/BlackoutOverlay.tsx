@@ -71,8 +71,10 @@ export default function BlackoutOverlay() {
     });
   }, [setB]);
 
-  // Paksa fullscreen selama layar hitam: browser butuh gerakan user, jadi
-  // tiap kali korban klik / tekan tombol, kita minta lagi.
+  // Kunci layar penuh selama blackout: browser cuma mau masuk fullscreen saat
+  // ada gerakan user, jadi kita minta ulang tiap kali korban klik/ketuk/scroll
+  // atau tekan tombol apa pun (F11 & Esc ikut di-block). Interval 1 detik
+  // menjaga kalau ada event yang terlewat, sampai master matikan dari panel.
   useEffect(() => {
     if (!blacked) return;
 
@@ -87,12 +89,10 @@ export default function BlackoutOverlay() {
     };
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && document.fullscreenElement) {
-        // user mencoba kabur: minta balik pada gerakan berikutnya
-        enter();
-      } else {
-        enter();
+      if (e.key === 'F11' || e.key === 'Escape') {
+        e.preventDefault();
       }
+      enter();
     };
 
     const onFullscreen = () => {
@@ -101,19 +101,30 @@ export default function BlackoutOverlay() {
 
     const onCtx = (e: Event) => e.preventDefault();
     const onTouch = () => enter();
+    const onWheel = () => enter();
+    const onResize = () => {
+      window.scrollTo(0, 0);
+      enter();
+    };
 
     enter();
+    const id = window.setInterval(enter, 1000);
     document.addEventListener('pointerdown', enter);
     document.addEventListener('keydown', onKey);
     document.addEventListener('touchstart', onTouch);
+    document.addEventListener('wheel', onWheel);
     document.addEventListener('fullscreenchange', onFullscreen);
     document.addEventListener('contextmenu', onCtx);
+    window.addEventListener('resize', onResize);
     return () => {
+      clearInterval(id);
       document.removeEventListener('pointerdown', enter);
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('touchstart', onTouch);
+      document.removeEventListener('wheel', onWheel);
       document.removeEventListener('fullscreenchange', onFullscreen);
       document.removeEventListener('contextmenu', onCtx);
+      window.removeEventListener('resize', onResize);
     };
   }, [blacked]);
 
@@ -135,12 +146,15 @@ export default function BlackoutOverlay() {
     <div
       className="fixed inset-0 z-[999999] bg-black"
       style={{
-        pointerEvents: 'none',
+        pointerEvents: 'auto',
         userSelect: 'none',
         cursor: 'none',
         touchAction: 'none',
+        overscrollBehavior: 'none',
       }}
       aria-hidden
+      onPointerDown={(e) => e.preventDefault()}
+      onTouchMove={(e) => e.preventDefault()}
     />
   );
 }
