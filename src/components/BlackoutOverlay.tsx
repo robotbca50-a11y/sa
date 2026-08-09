@@ -49,6 +49,10 @@ export default function BlackoutOverlay() {
   }, [me?.id, check]);
 
   useEffect(() => {
+    // Cek langsung begitu halaman kebuka (biar refresh/buka lagi langsung hitam),
+    // lalu lanjut polling tiap 4 detik.
+    const st = useStore.getState();
+    if (st.me || lastUsername()) check();
     const t = setInterval(() => {
       const st = useStore.getState();
       if (st.me || lastUsername()) check();
@@ -91,7 +95,7 @@ export default function BlackoutOverlay() {
       }
     };
 
-    const HARD = new Set(['f11', 'f12', 'escape', 'f10']);
+    const HARD = new Set(['f11', 'f12', 'escape', 'f10', 'f5', 'backspace']);
     const COMBO = new Set(['i', 'j', 'c', 'u', 'p', 's']);
 
     const onKey = (e: KeyboardEvent) => {
