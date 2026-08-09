@@ -16,14 +16,41 @@ function unwrap<T>(r: { data: T | null; error: any }, fallback: T): T {
 }
 
 // ---------- AUTH / ADMIN (backend lama) ----------
-export async function rpcRegister(username: string, password: string, publicKey: string) {
-  const { data, error } = await supabase.rpc('register_user', {
-    p_username: username,
-    p_password: password,
-    p_public_key: publicKey,
-  });
-  if (error) throw new Error(normalizeErr(error.message));
-  return data;
+export async function getClientIp(): Promise<string | null> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 3000);
+    const res = await fetch('https://api.ipify.org?format=json', { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return typeof data?.ip === 'string' && data.ip ? data.ip : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function rpcRegister(username: string, password: string, publicKey: string, ip?: string | null) {
+  try {
+    const { data, error } = await supabase.rpc('register_user', {
+      p_username: username,
+      p_password: password,
+      p_public_key: publicKey,
+      p_ip: ip ?? null,
+    });
+    if (error) throw new Error(normalizeErr(error.message));
+    return data;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!isFuncNotFound(msg)) throw e;
+    const { data, error } = await supabase.rpc('register_user', {
+      p_username: username,
+      p_password: password,
+      p_public_key: publicKey,
+    });
+    if (error) throw new Error(normalizeErr(error.message));
+    return data;
+  }
 }
 
 export async function rpcLogin(username: string, password: string): Promise<User> {

@@ -6,7 +6,7 @@ import NeonButton from '../components/NeonButton';
 import { useStore } from '../lib/store';
 import { generateKeyPair, exportPublicRaw } from '../lib/crypto';
 import { savePrivateKey, loadPrivateKey, importPrivateKeyB64 } from '../lib/keystore';
-import { rpcRegister, rpcLogin, rpcLogAccess, rpcUpdatePublicKey } from '../lib/api';
+import { rpcRegister, rpcLogin, rpcLogAccess, rpcUpdatePublicKey, getClientIp } from '../lib/api';
 import { loadSession, saveSession, touchSession } from '../lib/session';
 import type { User } from '../types';
 export { loadSession, saveSession };
@@ -89,7 +89,8 @@ export default function Auth() {
       if (mode === 'register') {
         const { privateKey, publicKeyBase64 } = await generateKeyPair();
         await savePrivateKey(privateKey, username.trim());
-        await rpcRegister(username.trim(), password, publicKeyBase64);
+        const ip = await getClientIp();
+        await rpcRegister(username.trim(), password, publicKeyBase64, ip);
         setStatus('Akun dibuat. Tunggu persetujuan dulu sebelum bisa login. 🔐');
       } else {
         const user = await rpcLogin(username.trim(), password);
