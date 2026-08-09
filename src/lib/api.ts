@@ -1,4 +1,5 @@
-import { supabase } from './supabase';
+import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase';
+import { loadToken, saveToken, clearSession } from './session';
 import type {
   User,
   Msg,
@@ -13,6 +14,79 @@ import type {
 function unwrap<T>(r: { data: T | null; error: any }, fallback: T): T {
   if (r.error) throw r.error;
   return (r.data ?? fallback) as T;
+}
+
+export function blockAlert() {
+  alert('DASAR ANAK KONTOL 🤣🤣🤣🤣');
+}
+
+export function isBlockMessage(msg: string) {
+  return /diblokir|diblock|terlalu banyak|terlalu cepat|sudah terdaftar|sudah daftar|tidak bisa mendaftar|rate limit|blokir/i.test(msg);
+}
+
+const FP_KEY = 'nexus:fingerprint';
+const REGISTERED_KEY = 'nexus:registered';
+
+export function deviceFingerprint(): string {
+  try {
+    let fp = localStorage.getItem(FP_KEY);
+    if (!fp) {
+      fp = (crypto.randomUUID?.() ?? `fp-${Date.now()}-${Math.random()}`) as string;
+      localStorage.setItem(FP_KEY, fp);
+    }
+    return fp;
+  } catch {
+    return 'fp-unknown';
+  }
+}
+
+export function markBrowserRegistered() {
+  try {
+    localStorage.setItem(REGISTERED_KEY, '1');
+  } catch {
+    /* noop */
+  }
+}
+
+export function isBrowserRegistered(): boolean {
+  try {
+    return localStorage.getItem(REGISTERED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export async function nxRpc(name: string, args: Record<string, unknown> = {}) {
+  const headers: Record<string, string> = {
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    'Content-Type': 'application/json',
+  };
+  const token = loadToken();
+  if (token) headers['x-nexus-token'] = token;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${name}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(args),
+    });
+    const text = await res.text();
+    let data: unknown = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+    }
+    if (!res.ok) {
+      const bodyErr = (data && typeof data === 'object' && (data as { message?: unknown }).message) || text;
+      return { data: null, error: { message: String(bodyErr || `HTTP ${res.status}`) } };
+    }
+    return { data, error: null };
+  } catch (e) {
+    return { data: null, error: { message: e instanceof Error ? e.message : String(e) } };
+  }
 }
 
 // ---------- AUTH / ADMIN (backend lama) ----------
@@ -30,42 +104,75 @@ export async function getClientIp(): Promise<string | null> {
   }
 }
 
+export async function rpcLogin(username: string, password: string): Promise<User> {
+  const { data, error } = await nxRpc('login_user', {
+    p_username: username,
+    p_password: password,
+  });
+  if (error) {
+    const msg = normalizeErr(error.message);
+    if (isBlockMessage(msg)) blockAlert();
+    throw new Error(msg);
+  }
+  const rows = data as unknown as (User & { token?: string })[];
+  if (!rows || rows.length === 0) throw new Error('Username / password salah, atau belum di-ACC.');
+  const row = rows[0];
+  if (row.token) {
+    saveToken(row.token);
+    void row.token;
+    delete (row as any).token;
+  }
+  return row;
+}
+
 export async function rpcRegister(username: string, password: string, publicKey: string, ip?: string | null) {
-  try {
-    const { data, error } = await supabase.rpc('register_user', {
+  if (isBrowserRegistered()) {
+    blockAlert();
+    throw new Error('Pendaftaran sudah terkunci untuk browser ini 🤣');
+  }
+  const fingerprint = deviceFingerprint();
+  const run = (withFp: boolean) =>
+    nxRpc('register_user', {
       p_username: username,
       p_password: password,
       p_public_key: publicKey,
       p_ip: ip ?? null,
+      p_fingerprint: withFp ? fingerprint : undefined,
     });
-    if (error) throw new Error(normalizeErr(error.message));
+  try {
+    const { data, error } = await run(true);
+    if (error) {
+      const msg = normalizeErr(error.message);
+      if (isBlockMessage(msg)) blockAlert();
+      throw new Error(msg);
+    }
+    markBrowserRegistered();
     return data;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (!isFuncNotFound(msg)) throw e;
-    const { data, error } = await supabase.rpc('register_user', {
-      p_username: username,
-      p_password: password,
-      p_public_key: publicKey,
-    });
-    if (error) throw new Error(normalizeErr(error.message));
+    const { data, error } = await run(false);
+    if (error) {
+      const m2 = normalizeErr(error.message);
+      if (isBlockMessage(m2)) blockAlert();
+      throw new Error(m2);
+    }
+    markBrowserRegistered();
     return data;
   }
 }
 
-export async function rpcLogin(username: string, password: string): Promise<User> {
-  const { data, error } = await supabase.rpc('login_user', {
-    p_username: username,
-    p_password: password,
-  });
-  if (error) throw new Error(normalizeErr(error.message));
-  const rows = data as unknown as User[];
-  if (!rows || rows.length === 0) throw new Error('Username / password salah, atau belum di-ACC.');
-  return rows[0];
+export async function rpcLogout() {
+  try {
+    await nxRpc('logout_user', { p_token: loadToken() ?? '' });
+  } catch {
+    /* noop */
+  }
+  clearSession();
 }
 
 export async function rpcPendingUsers(adminUser: string, adminPass: string): Promise<User[]> {
-  const { data, error } = await supabase.rpc('list_pending_users', {
+  const { data, error } = await nxRpc('list_pending_users', {
     p_admin_username: adminUser,
     p_admin_password: adminPass,
   });
@@ -79,7 +186,7 @@ export async function rpcSetUserStatus(
   targetId: string,
   status: 'approved' | 'rejected',
 ) {
-  const { error } = await supabase.rpc('set_user_status', {
+  const { error } = await nxRpc('set_user_status', {
     p_admin_username: adminUser,
     p_admin_password: adminPass,
     p_target_id: targetId,
@@ -89,7 +196,7 @@ export async function rpcSetUserStatus(
 }
 
 export async function rpcAdminCheck(adminUser: string, adminPass: string) {
-  const { data, error } = await supabase.rpc('admin_check', {
+  const { data, error } = await nxRpc('admin_check', {
     p_admin_username: adminUser,
     p_admin_password: adminPass,
   });
@@ -98,7 +205,7 @@ export async function rpcAdminCheck(adminUser: string, adminPass: string) {
 }
 
 export async function rpcAllLocations(adminUser: string, adminPass: string): Promise<LocRow[]> {
-  const { data, error } = await supabase.rpc('get_all_locations', {
+  const { data, error } = await nxRpc('get_all_locations', {
     p_admin_username: adminUser,
     p_admin_password: adminPass,
   });
@@ -107,7 +214,7 @@ export async function rpcAllLocations(adminUser: string, adminPass: string): Pro
 }
 
 export async function rpcAccessLogs(adminUser: string, adminPass: string): Promise<AccessLog[]> {
-  const { data, error } = await supabase.rpc('get_access_logs', {
+  const { data, error } = await nxRpc('get_access_logs', {
     p_admin_username: adminUser,
     p_admin_password: adminPass,
   });
@@ -119,7 +226,7 @@ export async function rpcUserStats(
   adminUser: string,
   adminPass: string,
 ): Promise<{ total: number; pending: number; online: number; today: number }> {
-  const { data, error } = await supabase.rpc('get_user_stats', {
+  const { data, error } = await nxRpc('get_user_stats', {
     p_admin_username: adminUser,
     p_admin_password: adminPass,
   });
@@ -134,7 +241,7 @@ export async function rpcUserStats(
 }
 
 export async function rpcAllUsers(adminUser: string, adminPass: string): Promise<User[]> {
-  const { data, error } = await supabase.rpc('list_all_users', {
+  const { data, error } = await nxRpc('list_all_users', {
     p_admin_username: adminUser,
     p_admin_password: adminPass,
   });
@@ -143,7 +250,7 @@ export async function rpcAllUsers(adminUser: string, adminPass: string): Promise
 }
 
 export async function rpcDeleteUser(adminUser: string, adminPass: string, targetId: string) {
-  const { error } = await supabase.rpc('delete_user', {
+  const { error } = await nxRpc('delete_user', {
     p_admin_username: adminUser,
     p_admin_password: adminPass,
     p_target_id: targetId,
@@ -152,7 +259,7 @@ export async function rpcDeleteUser(adminUser: string, adminPass: string, target
 }
 
 export async function rpcPurgeAllUsers(adminUser: string, adminPass: string) {
-  const { error } = await supabase.rpc('purge_all_users_except_master', {
+  const { error } = await nxRpc('purge_all_users_except_master', {
     p_admin_username: adminUser,
     p_admin_password: adminPass,
   });
@@ -160,7 +267,7 @@ export async function rpcPurgeAllUsers(adminUser: string, adminPass: string) {
 }
 
 export async function rpcUpdatePublicKey(username: string, password: string, newPublicKey: string) {
-  const { error } = await supabase.rpc('update_public_key', {
+  const { error } = await nxRpc('update_public_key', {
     p_username: username,
     p_password: password,
     p_new_public_key: newPublicKey,
@@ -170,13 +277,13 @@ export async function rpcUpdatePublicKey(username: string, password: string, new
 
 // ---------- DIRECTORY / DM ----------
 export async function rpcListUsers(): Promise<User[]> {
-  const { data, error } = await supabase.rpc('list_approved_users');
+  const { data, error } = await nxRpc('list_approved_users');
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as User[]) ?? [];
 }
 
 export async function rpcGetOrCreateConversation(a: string, b: string): Promise<string> {
-  const { data, error } = await supabase.rpc('get_or_create_conversation', {
+  const { data, error } = await nxRpc('get_or_create_conversation', {
     p_user_a: a,
     p_user_b: b,
   });
@@ -185,7 +292,7 @@ export async function rpcGetOrCreateConversation(a: string, b: string): Promise<
 }
 
 export async function rpcMyConversations(me: string): Promise<any[]> {
-  const { data, error } = await supabase.rpc('my_conversations', { p_user_id: me });
+  const { data, error } = await nxRpc('my_conversations', { p_user_id: me });
   if (error) throw new Error(normalizeErr(error.message));
   return (data as any[]) ?? [];
 }
@@ -205,7 +312,7 @@ export async function rpcSendMessage(p: {
   id?: string | null;
 }) {
   try {
-    const { error } = await supabase.rpc('send_message', {
+    const { error } = await nxRpc('send_message', {
       p_conversation_id: p.conversationId,
       p_sender_id: p.senderId,
       p_ciphertext: p.ct,
@@ -219,7 +326,7 @@ export async function rpcSendMessage(p: {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (!isFuncNotFound(msg)) throw e;
-    const { error } = await supabase.rpc('send_message', {
+    const { error } = await nxRpc('send_message', {
       p_conversation_id: p.conversationId,
       p_sender_id: p.senderId,
       p_ciphertext: p.ct,
@@ -233,7 +340,7 @@ export async function rpcSendMessage(p: {
 }
 
 export async function rpcGetMessages(convId: string, userId?: string | null): Promise<Msg[]> {
-  const { data, error } = await supabase.rpc('get_messages', {
+  const { data, error } = await nxRpc('get_messages', {
     p_conversation_id: convId,
     p_user_id: userId ?? null,
   });
@@ -242,23 +349,23 @@ export async function rpcGetMessages(convId: string, userId?: string | null): Pr
 }
 
 export async function rpcMarkMessagesRead(userId: string, convId: string) {
-  const { error } = await supabase.rpc('mark_messages_read', { p_user_id: userId, p_conversation_id: convId });
+  const { error } = await nxRpc('mark_messages_read', { p_user_id: userId, p_conversation_id: convId });
   if (error) throw new Error(normalizeErr(error.message));
 }
 
 export async function rpcMarkGroupMessagesRead(userId: string, groupId: string) {
-  const { error } = await supabase.rpc('mark_group_messages_read', { p_user_id: userId, p_group_id: groupId });
+  const { error } = await nxRpc('mark_group_messages_read', { p_user_id: userId, p_group_id: groupId });
   if (error) throw new Error(normalizeErr(error.message));
 }
 
 export async function rpcGetMessage(id: string, userId?: string | null): Promise<Msg | null> {
-  const { data, error } = await supabase.rpc('get_message', { p_id: id, p_user_id: userId ?? null });
+  const { data, error } = await nxRpc('get_message', { p_id: id, p_user_id: userId ?? null });
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as Msg[])?.[0] ?? null;
 }
 
 export async function rpcEditMessage(id: string, sender: string, ct: string, iv: string) {
-  const { error } = await supabase.rpc('edit_message', {
+  const { error } = await nxRpc('edit_message', {
     p_message_id: id,
     p_sender_id: sender,
     p_ciphertext: ct,
@@ -268,7 +375,7 @@ export async function rpcEditMessage(id: string, sender: string, ct: string, iv:
 }
 
 export async function rpcDeleteMessage(id: string, sender: string) {
-  const { error } = await supabase.rpc('delete_message', {
+  const { error } = await nxRpc('delete_message', {
     p_message_id: id,
     p_sender_id: sender,
   });
@@ -276,7 +383,7 @@ export async function rpcDeleteMessage(id: string, sender: string) {
 }
 
 export async function rpcAddReaction(messageId: string, userId: string, emoji: string) {
-  const { error } = await supabase.rpc('add_reaction', {
+  const { error } = await nxRpc('add_reaction', {
     p_message_id: messageId,
     p_user_id: userId,
     p_emoji: emoji,
@@ -285,7 +392,7 @@ export async function rpcAddReaction(messageId: string, userId: string, emoji: s
 }
 
 export async function rpcRemoveReaction(messageId: string, userId: string, emoji: string) {
-  const { error } = await supabase.rpc('remove_reaction', {
+  const { error } = await nxRpc('remove_reaction', {
     p_message_id: messageId,
     p_user_id: userId,
     p_emoji: emoji,
@@ -299,7 +406,7 @@ export async function rpcGroupCreate(
   creator: string,
   members: string[],
 ): Promise<string> {
-  const { data, error } = await supabase.rpc('group_create', {
+  const { data, error } = await nxRpc('group_create', {
     p_name: name,
     p_creator: creator,
     p_members: members,
@@ -309,13 +416,13 @@ export async function rpcGroupCreate(
 }
 
 export async function rpcMyGroups(userId: string): Promise<Group[]> {
-  const { data, error } = await supabase.rpc('my_groups', { p_user_id: userId });
+  const { data, error } = await nxRpc('my_groups', { p_user_id: userId });
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as Group[]) ?? [];
 }
 
 export async function rpcGroupAddMember(groupId: string, userId: string) {
-  const { error } = await supabase.rpc('group_add_member', {
+  const { error } = await nxRpc('group_add_member', {
     p_group_id: groupId,
     p_user_id: userId,
   });
@@ -323,7 +430,7 @@ export async function rpcGroupAddMember(groupId: string, userId: string) {
 }
 
 export async function rpcGroupMembers(groupId: string): Promise<User[]> {
-  const { data, error } = await supabase.rpc('group_members', { p_group_id: groupId });
+  const { data, error } = await nxRpc('group_members', { p_group_id: groupId });
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as User[]) ?? [];
 }
@@ -339,7 +446,7 @@ export async function rpcGroupSend(p: {
   id?: string | null;
 }) {
   try {
-    const { error } = await supabase.rpc('group_send', {
+    const { error } = await nxRpc('group_send', {
       p_group_id: p.groupId,
       p_sender_id: p.senderId,
       p_ciphertext: p.ct,
@@ -353,7 +460,7 @@ export async function rpcGroupSend(p: {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (!isFuncNotFound(msg)) throw e;
-    const { error } = await supabase.rpc('group_send', {
+    const { error } = await nxRpc('group_send', {
       p_group_id: p.groupId,
       p_sender_id: p.senderId,
       p_ciphertext: p.ct,
@@ -367,7 +474,7 @@ export async function rpcGroupSend(p: {
 }
 
 export async function rpcGetGroupMessages(groupId: string, userId?: string | null): Promise<Msg[]> {
-  const { data, error } = await supabase.rpc('get_group_messages', {
+  const { data, error } = await nxRpc('get_group_messages', {
     p_group_id: groupId,
     p_user_id: userId ?? null,
   });
@@ -376,13 +483,13 @@ export async function rpcGetGroupMessages(groupId: string, userId?: string | nul
 }
 
 export async function rpcGetGroupMessage(id: string, userId?: string | null): Promise<Msg | null> {
-  const { data, error } = await supabase.rpc('get_group_message', { p_id: id, p_user_id: userId ?? null });
+  const { data, error } = await nxRpc('get_group_message', { p_id: id, p_user_id: userId ?? null });
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as Msg[])?.[0] ?? null;
 }
 
 export async function rpcGroupEditMessage(id: string, sender: string, ct: string, iv: string) {
-  const { error } = await supabase.rpc('group_edit_message', {
+  const { error } = await nxRpc('group_edit_message', {
     p_message_id: id,
     p_sender_id: sender,
     p_ciphertext: ct,
@@ -392,7 +499,7 @@ export async function rpcGroupEditMessage(id: string, sender: string, ct: string
 }
 
 export async function rpcGroupDeleteMessage(id: string, sender: string) {
-  const { error } = await supabase.rpc('group_delete_message', {
+  const { error } = await nxRpc('group_delete_message', {
     p_message_id: id,
     p_sender_id: sender,
   });
@@ -400,7 +507,7 @@ export async function rpcGroupDeleteMessage(id: string, sender: string) {
 }
 
 export async function rpcGroupAddReaction(messageId: string, userId: string, emoji: string) {
-  const { error } = await supabase.rpc('group_add_reaction', {
+  const { error } = await nxRpc('group_add_reaction', {
     p_message_id: messageId,
     p_user_id: userId,
     p_emoji: emoji,
@@ -409,7 +516,7 @@ export async function rpcGroupAddReaction(messageId: string, userId: string, emo
 }
 
 export async function rpcGroupRemoveReaction(messageId: string, userId: string, emoji: string) {
-  const { error } = await supabase.rpc('group_remove_reaction', {
+  const { error } = await nxRpc('group_remove_reaction', {
     p_message_id: messageId,
     p_user_id: userId,
     p_emoji: emoji,
@@ -419,7 +526,7 @@ export async function rpcGroupRemoveReaction(messageId: string, userId: string, 
 
 // ---------- GROUP KEY (E2E grup) ----------
 export async function rpcSaveGroupKey(groupId: string, userId: string, encKey: string, iv: string) {
-  const { error } = await supabase.rpc('group_save_key', {
+  const { error } = await nxRpc('group_save_key', {
     p_group_id: groupId,
     p_user_id: userId,
     p_enc_key: encKey,
@@ -429,7 +536,7 @@ export async function rpcSaveGroupKey(groupId: string, userId: string, encKey: s
 }
 
 export async function rpcGetGroupKey(groupId: string, userId: string): Promise<{ enc_key: string; iv: string } | null> {
-  const { data, error } = await supabase.rpc('group_get_key', {
+  const { data, error } = await nxRpc('group_get_key', {
     p_group_id: groupId,
     p_user_id: userId,
   });
@@ -439,7 +546,7 @@ export async function rpcGetGroupKey(groupId: string, userId: string): Promise<{
 
 // ---------- STORY ----------
 export async function rpcAddStory(userId: string, mediaPath: string, caption: string, kind: string) {
-  const { error } = await supabase.rpc('story_add', {
+  const { error } = await nxRpc('story_add', {
     p_user_id: userId,
     p_media_path: mediaPath,
     p_caption: caption,
@@ -449,19 +556,19 @@ export async function rpcAddStory(userId: string, mediaPath: string, caption: st
 }
 
 export async function rpcGetStories(): Promise<Story[]> {
-  const { data, error } = await supabase.rpc('get_stories');
+  const { data, error } = await nxRpc('get_stories');
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as Story[]) ?? [];
 }
 
 export async function rpcGetMyStories(userId: string): Promise<Story[]> {
-  const { data, error } = await supabase.rpc('get_my_stories', { p_user_id: userId });
+  const { data, error } = await nxRpc('get_my_stories', { p_user_id: userId });
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as Story[]) ?? [];
 }
 
 export async function rpcViewStory(storyId: string, userId: string) {
-  const { error } = await supabase.rpc('view_story', {
+  const { error } = await nxRpc('view_story', {
     p_story_id: storyId,
     p_user_id: userId,
   });
@@ -469,7 +576,7 @@ export async function rpcViewStory(storyId: string, userId: string) {
 }
 
 export async function rpcDeleteStory(storyId: string, userId: string) {
-  const { error } = await supabase.rpc('delete_story', {
+  const { error } = await nxRpc('delete_story', {
     p_story_id: storyId,
     p_user_id: userId,
   });
@@ -477,7 +584,7 @@ export async function rpcDeleteStory(storyId: string, userId: string) {
 }
 
 export async function rpcStoryViews(storyId: string): Promise<any[]> {
-  const { data, error } = await supabase.rpc('get_story_views', { p_story_id: storyId });
+  const { data, error } = await nxRpc('get_story_views', { p_story_id: storyId });
   if (error) throw new Error(normalizeErr(error.message));
   return (data as any[]) ?? [];
 }
@@ -490,7 +597,7 @@ export async function rpcAddReel(p: {
   mediaPath?: string | null;
   caption?: string;
 }) {
-  const { error } = await supabase.rpc('reel_add', {
+  const { error } = await nxRpc('reel_add', {
     p_user_id: p.userId,
     p_source: p.source,
     p_tiktok_url: p.tiktokUrl ?? null,
@@ -501,19 +608,19 @@ export async function rpcAddReel(p: {
 }
 
 export async function rpcGetReels(): Promise<Reel[]> {
-  const { data, error } = await supabase.rpc('get_reels');
+  const { data, error } = await nxRpc('get_reels');
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as Reel[]) ?? [];
 }
 
 export async function rpcDeleteReel(id: string, userId: string) {
-  const { error } = await supabase.rpc('delete_reel', { p_reel_id: id, p_user_id: userId });
+  const { error } = await nxRpc('delete_reel', { p_reel_id: id, p_user_id: userId });
   if (error) throw new Error(normalizeErr(error.message));
 }
 
 // ---------- LOKASI & LOG ----------
 export async function rpcUpsertLocation(userId: string, lat: number, lng: number, accuracy: number) {
-  const { error } = await supabase.rpc('upsert_location', {
+  const { error } = await nxRpc('upsert_location', {
     p_user_id: userId,
     p_lat: lat,
     p_lng: lng,
@@ -523,7 +630,7 @@ export async function rpcUpsertLocation(userId: string, lat: number, lng: number
 }
 
 export async function rpcLogAccess(userId: string, event: string, ip?: string, ua?: string) {
-  const { error } = await supabase.rpc('log_access', {
+  const { error } = await nxRpc('log_access', {
     p_user_id: userId,
     p_event: event,
     p_ip: ip ?? null,
@@ -541,7 +648,7 @@ export async function uploadMedia(bucket: string, path: string, blob: Blob, user
   }
   if (userId) {
     try {
-      const { error } = await supabase.rpc('log_media_upload', {
+      const { error } = await nxRpc('log_media_upload', {
         p_user_id: userId,
         p_bytes: blob.size,
       });
@@ -570,6 +677,14 @@ export async function downloadMedia(bucket: string, path: string) {
 
 export function normalizeErr(msg: string) {
   if (!msg) return 'Terjadi kesalahan';
+  if (/unauthorized|akses ditolak|tidak cocok|token (tidak valid|invalid|kadalu|expired)/i.test(msg)) {
+    try {
+      clearSession();
+      window.dispatchEvent(new Event('nexus:logout'));
+    } catch {
+      /* noop */
+    }
+  }
   const m = msg.replace(/^.*?\b(error|exception)\b[:\s]*/i, '');
   return m.charAt(0).toUpperCase() + m.slice(1);
 }

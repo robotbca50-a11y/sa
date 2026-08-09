@@ -12,7 +12,7 @@ import {
   rpcEditMessage, rpcDeleteMessage, rpcGroupEditMessage, rpcGroupDeleteMessage,
   rpcGroupCreate, rpcGroupAddMember, rpcGroupMembers, rpcGetGroupKey, rpcSaveGroupKey,
   rpcMarkMessagesRead, rpcMarkGroupMessagesRead,
-  rpcLogAccess, uploadMedia, toastErr,
+  rpcLogout, rpcLogAccess, uploadMedia, toastErr,
 } from '../../lib/api';
 import {
   deriveSharedKey, encryptText, decryptText, randomAESKey, exportAESKey, encryptToRecipient,
@@ -860,6 +860,7 @@ export default function ChatApp() {
     if (me) rpcLogAccess(me.id, 'logout').catch(() => {});
     stopPresence();
     clearCache();
+    rpcLogout();
     clearSession();
     setSession(null, null);
     setView('landing');

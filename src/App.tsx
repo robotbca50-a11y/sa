@@ -10,6 +10,7 @@ import { loadPrivateKey } from './lib/keystore';
 import { exportPublicRaw } from './lib/crypto';
 import { initPresence, stopPresence, startLocationSharing, stopLocationSharing } from './lib/realtime';
 import { loadSession, clearSession, attachIdleWatcher } from './lib/session';
+import { rpcLogout } from './lib/api';
 import { updateTitle } from './lib/notify';
 
 function isMasterPortal() {
@@ -25,12 +26,19 @@ export default function App() {
   const doLogout = useCallback(() => {
     stopPresence();
     stopLocationSharing();
+    rpcLogout();
     clearSession();
     useStore.getState().setSession(null, null);
     setView('landing');
   }, [setView]);
 
   useEffect(() => attachIdleWatcher(doLogout), [doLogout]);
+
+  useEffect(() => {
+    const onAuthFail = () => doLogout();
+    window.addEventListener('nexus:logout', onAuthFail);
+    return () => window.removeEventListener('nexus:logout', onAuthFail);
+  }, [doLogout]);
 
   useEffect(() => {
     (async () => {

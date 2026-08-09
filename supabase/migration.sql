@@ -16,12 +16,13 @@ create extension if not exists pgcrypto;
 create table if not exists public.users (
   id uuid primary key default gen_random_uuid(),
   username text unique not null,
-  password text not null,
+  password text,
   public_key text,
   status text default 'pending',
   created_at timestamptz default now()
 );
 
+alter table public.users alter column password drop not null;
 alter table public.users add column if not exists is_admin boolean default false;
 
 create table if not exists public.conversations (
@@ -187,6 +188,24 @@ create table if not exists public.upload_daily (
   primary key (user_id, day)
 );
 
+-- Sesi login (token dipegang browser, hanya hash yang disimpan di sini)
+create table if not exists public.sessions (
+  token_hash text primary key,
+  user_id uuid not null references public.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  revoked boolean not null default false
+);
+
+create index if not exists sessions_user on public.sessions (user_id);
+
+-- Password di-hash (bcrypt). Kolom `password` lama dibiarkan utk migrasi akun lama.
+alter table public.users add column if not exists password_hash text;
+
+-- Registrasi: lacak per browser (fingerprint) + sukses/gagal
+alter table public.registration_logs add column if not exists fingerprint text;
+alter table public.registration_logs add column if not exists success boolean default true;
+
 -- ---------------------------------------------------------------------
 -- 4) REALTIME: publish table yang perlu live
 -- ---------------------------------------------------------------------
@@ -333,21 +352,81 @@ begin
   end if;
 end $$;
 
--- Kuota upload storage: maks 500 MB & 100 file per hari per akun.
--- Dipanggil dari frontend sebelum tiap upload.
-create or replace function public.log_media_upload(p_user_id uuid, p_bytes bigint)
+-- =====================================================================
+-- SESSION AUTH (token per-login, bukan JWT yang bisa dipalsukan client)
+-- Header yang dikirim frontend: x-nexus-token = <token random>
+-- =====================================================================
+create or replace function public.auth_user_id()
+returns uuid
+language plpgsql stable set search_path = public
+as $$
+declare
+  v_token text;
+  v_uid uuid;
+begin
+  v_token := nullif(current_setting('request.headers', true)::jsonb ->> 'x-nexus-token', '');
+  if v_token is null then
+    return null;
+  end if;
+  select s.user_id into v_uid
+  from public.sessions s
+  where s.token_hash = encode(digest(v_token, 'sha256'), 'hex')
+    and s.revoked = false
+    and s.expires_at > now();
+  return v_uid;
+end $$;
+
+create or replace function public.me()
+returns uuid
+language sql stable set search_path = public
+as $$
+  select public.auth_user_id();
+$$;
+
+-- Wajib login: return user_id atau tolak
+create or replace function public.require_auth()
+returns uuid
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid := public.auth_user_id();
+begin
+  if v_uid is null then
+    raise exception 'Unauthorized: sesi habis atau belum login. Login ulang.';
+  end if;
+  return v_uid;
+end $$;
+
+-- Logout: hapus sesi
+create or replace function public.logout_user(p_token text)
 returns void
 language plpgsql security definer set search_path = public
 as $$
-declare v_bytes bigint; v_files int;
+begin
+  if p_token is null then
+    return;
+  end if;
+  delete from public.sessions
+  where token_hash = encode(digest(p_token, 'sha256'), 'hex');
+end $$;
+
+-- Kuota upload storage: maks 500 MB & 100 file per hari per akun.
+-- Dipanggil dari frontend sebelum tiap upload.
+create or replace function public.log_media_upload(p_user_id uuid default null, p_bytes bigint)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+declare v_bytes bigint; v_files int; v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
   if p_bytes is null or p_bytes < 0 then
     p_bytes := 0;
   end if;
   select coalesce(bytes, 0), coalesce(files, 0) into v_bytes, v_files
-  from public.upload_daily where user_id = p_user_id and day = current_date;
+  from public.upload_daily where user_id = v_uid and day = current_date;
   if v_bytes + p_bytes > 524288000 then
     raise exception 'Kuota upload harian tercapai (500 MB). Coba lagi besok.';
   end if;
@@ -355,7 +434,7 @@ begin
     raise exception 'Maksimal 100 file per hari per akun.';
   end if;
   insert into public.upload_daily (user_id, day, bytes, files)
-  values (p_user_id, current_date, p_bytes, 1)
+  values (v_uid, current_date, p_bytes, 1)
   on conflict (user_id, day) do update set
     bytes = upload_daily.bytes + excluded.bytes,
     files = upload_daily.files + excluded.files;
@@ -379,7 +458,7 @@ begin
   end loop;
 end $$;
 
-create or replace function public.register_user(p_username text, p_password text, p_public_key text, p_ip text default null)
+create or replace function public.register_user(p_username text, p_password text, p_public_key text, p_ip text default null, p_fingerprint text default null)
 returns uuid
 language plpgsql security definer set search_path = public
 as $$
@@ -387,44 +466,77 @@ declare
   new_id uuid;
   v_ip text;
   v_cnt int;
+  v_fail int;
   v_blocked_until timestamptz;
+  v_fp text := nullif(btrim(coalesce(p_fingerprint, '')), '');
 begin
   perform public.rate_limit();
   v_ip := coalesce(nullif(btrim(coalesce(p_ip, '')), ''), public.client_ip());
+
+  -- Blokir IP yg masih kena hukuman
   select blocked_until into v_blocked_until
   from public.ip_blocks where ip = v_ip and blocked_until > now();
   if v_blocked_until is not null then
     raise exception 'IP kamu diblokir sementara sampai % — kamu sudah membuat terlalu banyak akun dari IP yang sama. Coba lagi nanti.', to_char(v_blocked_until, 'DD-MM-YYYY HH24:MI');
   end if;
+
+  -- 1 akun sukses per browser (fingerprint). Browser yang sama tidak bisa daftar lagi.
+  if v_fp is not null and exists (
+    select 1 from public.registration_logs
+    where fingerprint = v_fp and success = true
+  ) then
+    raise exception 'Browser ini sudah punya akun NEXUS. Buat akun lain pakai browser/perangkat lain.';
+  end if;
+
+  -- Terlalu banyak percobaan GAGAL daftar (tiap percobaan tetap membebani DB)
+  select count(*) into v_fail
+  from public.registration_logs
+  where success = false
+    and created_at > now() - interval '15 minutes'
+    and (fingerprint = v_fp or (v_fp is null and ip = v_ip));
+  if v_fail >= 5 then
+    insert into public.ip_blocks (ip, blocked_until)
+    values (v_ip, now() + interval '1 hour')
+    on conflict (ip) do update set blocked_until = excluded.blocked_until;
+    raise exception 'Terlalu banyak percobaan daftar. IP diblokir 1 jam.';
+  end if;
+
+  -- Maks 3 akun per IP dalam 10 menit
   select count(*) into v_cnt
   from public.registration_logs
-  where ip = v_ip and created_at > now() - interval '10 minutes';
-  if v_cnt >= 2 then
+  where ip = v_ip and success = true and created_at > now() - interval '10 minutes';
+  if v_cnt >= 3 then
     insert into public.ip_blocks (ip, blocked_until)
     values (v_ip, now() + interval '4 hours')
     on conflict (ip) do update set blocked_until = excluded.blocked_until;
-    raise exception 'IP kamu diblokir selama 4 jam karena membuat 3 akun dalam waktu cepat.';
+    raise exception 'IP kamu diblokir selama 4 jam karena membuat terlalu banyak akun dalam waktu cepat.';
   end if;
+
   if p_username is null or length(btrim(p_username)) < 2 then
     raise exception 'Username minimal 2 karakter';
   end if;
   if p_password is null or length(p_password) < 4 then
     raise exception 'Password minimal 4 karakter';
   end if;
-  insert into public.users (username, password, public_key, status)
-  values (btrim(p_username), p_password, p_public_key, 'pending')
+  if p_public_key is null or length(p_public_key) < 10 then
+    raise exception 'Kunci publik tidak valid';
+  end if;
+
+  insert into public.users (username, password_hash, public_key, status)
+  values (btrim(p_username), crypt(p_password, gen_salt('bf')), p_public_key, 'pending')
   returning id into new_id;
-  insert into public.access_logs (user_id, event) values (new_id, 'register');
-  insert into public.registration_logs (ip) values (v_ip);
+  insert into public.access_logs (user_id, event, ip) values (new_id, 'register', v_ip);
+  insert into public.registration_logs (ip, fingerprint, success) values (v_ip, v_fp, true);
   delete from public.ip_blocks where blocked_until <= now();
   delete from public.registration_logs where created_at < now() - interval '1 day';
   return new_id;
 exception when unique_violation then
+  insert into public.registration_logs (ip, fingerprint, success) values (v_ip, v_fp, false);
   raise exception 'Username sudah dipakai';
 end $$;
 
 create or replace function public.login_user(p_username text, p_password text)
-returns setof public.users
+returns table (id uuid, username text, public_key text, status text, is_admin boolean, token text)
 language plpgsql security definer set search_path = public
 as $$
 declare
@@ -432,6 +544,7 @@ declare
   v_ip text := public.client_ip();
   v_failed int;
   v_blocked timestamptz;
+  v_token text;
 begin
   perform public.rate_limit();
   select blocked_until into v_blocked from public.ip_blocks
@@ -447,15 +560,35 @@ begin
     on conflict (ip) do update set blocked_until = excluded.blocked_until;
     raise exception 'Terlalu banyak percobaan login gagal. IP diblokir 1 jam.';
   end if;
-  select id into target_id from public.users
-  where username = btrim(p_username) and password = p_password and status = 'approved';
+
+  -- Cek password (mendukung akun lama yang masih plain, sekaligus di-upgrade ke bcrypt)
+  select id into target_id
+  from public.users
+  where username = btrim(p_username) and status = 'approved'
+    and (
+      (password_hash is not null and password_hash = crypt(p_password, password_hash))
+      or (password_hash is null and password = p_password)
+    );
   if target_id is null then
     insert into public.login_attempts (ip, username, success) values (v_ip, p_username, false);
     raise exception 'Username / password salah, atau belum di-ACC admin';
   end if;
+
+  -- Upgrade akun lama: simpan hash, hapus password plaintext
+  update public.users
+  set password_hash = crypt(p_password, gen_salt('bf')), password = null
+  where id = target_id and password_hash is null;
+
+  -- Buat sesi login (token random, browser simpan, DB simpan hash-nya)
+  v_token := encode(gen_random_bytes(32), 'hex');
+  insert into public.sessions (token_hash, user_id, expires_at)
+  values (encode(digest(v_token, 'sha256'), 'hex'), target_id, now() + interval '7 days');
+
   insert into public.login_attempts (ip, username, success) values (v_ip, p_username, true);
   insert into public.access_logs (user_id, event, ip) values (target_id, 'login', v_ip);
-  return query select * from public.users where id = target_id;
+  return query
+  select u.id, u.username, u.public_key, u.status, coalesce(u.is_admin, false), v_token as token
+  from public.users u where u.id = target_id;
 end $$;
 
 create or replace function public.admin_check(p_admin_username text, p_admin_password text)
@@ -466,8 +599,17 @@ declare ok boolean;
 begin
   select exists(
     select 1 from public.users
-    where username = btrim(p_admin_username) and password = p_admin_password and is_admin = true
+    where username = btrim(p_admin_username) and is_admin = true
+      and (
+        (password_hash is not null and password_hash = crypt(p_admin_password, password_hash))
+        or (password_hash is null and password = p_admin_password)
+      )
   ) into ok;
+  if ok then
+    update public.users
+    set password_hash = crypt(p_admin_password, gen_salt('bf')), password = null
+    where username = btrim(p_admin_username) and password_hash is null;
+  end if;
   return ok;
 end $$;
 
@@ -601,22 +743,24 @@ create or replace function public.update_public_key(p_username text, p_password 
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_id uuid;
 begin
   perform public.rate_limit();
-  if not exists (
-    select 1 from public.users
-    where username = p_username and password = p_password and status = 'approved'
-  ) then
+  select id into v_id
+  from public.users
+  where username = p_username and status = 'approved'
+    and (
+      (password_hash is not null and password_hash = crypt(p_password, password_hash))
+      or (password_hash is null and password = p_password)
+    );
+  if v_id is null then
     raise exception 'Username / password salah';
   end if;
   update public.users
   set public_key = p_new_public_key
-  where username = p_username;
+  where id = v_id;
   insert into public.access_logs (user_id, event, ip)
-  values (
-    (select id from public.users where username = p_username),
-    'key_rotated', 'app'
-  );
+  values (v_id, 'key_rotated', public.client_ip());
 end $$;
 
 create or replace function public.get_all_locations(p_admin_username text, p_admin_password text)
@@ -660,6 +804,7 @@ language plpgsql security definer set search_path = public
 as $$
 begin
   perform public.rate_limit();
+  perform public.require_auth();
   return query
   select u.id, u.username, u.public_key, u.created_at from public.users u
   where u.status = 'approved' and coalesce(u.is_admin, false) = false
@@ -672,6 +817,7 @@ language plpgsql security definer set search_path = public
 as $$
 begin
   perform public.rate_limit();
+  perform public.require_auth();
   return query select u.id, u.public_key from public.users u
   where u.username = btrim(p_username) and u.status = 'approved';
 end $$;
@@ -680,9 +826,13 @@ create or replace function public.get_or_create_conversation(p_user_a uuid, p_us
 returns uuid
 language plpgsql security definer set search_path = public
 as $$
-declare cid uuid;
+declare cid uuid; v_uid uuid;
 begin
   perform public.rate_limit();
+  v_uid := public.require_auth();
+  if v_uid <> p_user_a and v_uid <> p_user_b then
+    raise exception 'Akses ditolak: kamu bukan bagian percakapan ini';
+  end if;
   perform public.require_user(p_user_a);
   perform public.require_user(p_user_b);
   select id into cid from public.conversations
@@ -694,17 +844,18 @@ begin
   return cid;
 end $$;
 
-create or replace function public.my_conversations(p_user_id uuid)
+create or replace function public.my_conversations(p_user_id uuid default null)
 returns table (id uuid, peer_id uuid, peer_username text, peer_public_key text, last_at timestamptz, last_type text, last_ciphertext text, last_iv text, last_sender_id uuid)
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
+  v_uid := public.require_auth();
   return query
   select
     c.id,
-    case when c.user_a = p_user_id then c.user_b else c.user_a end as peer_id,
+    case when c.user_a = v_uid then c.user_b else c.user_a end as peer_id,
     pu.username as peer_username,
     pu.public_key as peer_public_key,
     m.created_at as last_at,
@@ -713,30 +864,34 @@ begin
     m.iv as last_iv,
     m.sender_id as last_sender_id
   from public.conversations c
-  join public.users pu on pu.id = case when c.user_a = p_user_id then c.user_b else c.user_a end
+  join public.users pu on pu.id = case when c.user_a = v_uid then c.user_b else c.user_a end
   left join lateral (
     select m2.* from public.messages m2
     where m2.conversation_id = c.id and m2.deleted = false
     order by m2.created_at desc limit 1
   ) m on true
-  where (c.user_a = p_user_id or c.user_b = p_user_id)
+  where (c.user_a = v_uid or c.user_b = v_uid)
     and coalesce(pu.is_admin, false) = false
   order by m.created_at desc nulls last;
 end $$;
 
-create or replace function public.send_message(p_conversation_id uuid, p_sender_id uuid, p_ciphertext text, p_iv text, p_msg_type text, p_media_path text default null, p_reply_to uuid default null, p_id uuid default gen_random_uuid())
+create or replace function public.send_message(p_conversation_id uuid, p_sender_id uuid default null, p_ciphertext text, p_iv text, p_msg_type text, p_media_path text default null, p_reply_to uuid default null, p_id uuid default gen_random_uuid())
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_sender_id);
-  perform public.require_conversation_member(p_conversation_id, p_sender_id);
+  v_uid := public.require_auth();
+  if p_sender_id is not null and v_uid <> p_sender_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
+  perform public.require_conversation_member(p_conversation_id, v_uid);
   if p_ciphertext is not null and length(p_ciphertext) > 50000 then
     raise exception 'Pesan terlalu panjang';
   end if;
   insert into public.messages (id, conversation_id, sender_id, ciphertext, iv, msg_type, media_path, reply_to)
-  values (p_id, p_conversation_id, p_sender_id, p_ciphertext, p_iv, p_msg_type, p_media_path, p_reply_to)
+  values (p_id, p_conversation_id, v_uid, p_ciphertext, p_iv, p_msg_type, p_media_path, p_reply_to)
   on conflict (id) do nothing;
 end $$;
 
@@ -746,9 +901,7 @@ language plpgsql security definer set search_path = public
 as $$
 begin
   perform public.rate_limit();
-  if p_user_id is not null then
-    perform public.require_conversation_member(p_conversation_id, p_user_id);
-  end if;
+  perform public.require_conversation_member(p_conversation_id, public.require_auth());
   return query
   select m.id, m.conversation_id, m.sender_id, u.username, u.public_key as sender_public_key,
          m.ciphertext, m.iv, m.msg_type, m.media_path, m.reply_to, m.edited_at, m.deleted, m.read_at, m.created_at
@@ -764,10 +917,10 @@ language plpgsql security definer set search_path = public
 as $$
 begin
   perform public.rate_limit();
-  perform public.require_conversation_member(p_conversation_id, p_user_id);
+  perform public.require_conversation_member(p_conversation_id, public.require_auth());
   update public.messages set read_at = now()
   where conversation_id = p_conversation_id
-    and sender_id <> p_user_id
+    and sender_id <> public.me()
     and read_at is null;
 end $$;
 
@@ -775,107 +928,128 @@ create or replace function public.get_message(p_id uuid, p_user_id uuid default 
 returns setof public.messages
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  if p_user_id is not null and not exists (
+  v_uid := public.require_auth();
+  if not exists (
     select 1 from public.messages m
     join public.conversations c on c.id = m.conversation_id
-    where m.id = p_id and (c.user_a = p_user_id or c.user_b = p_user_id)
+    where m.id = p_id and (c.user_a = v_uid or c.user_b = v_uid)
   ) then
     raise exception 'Akses ditolak: bukan anggota percakapan';
   end if;
   return query select * from public.messages where id = p_id;
 end $$;
 
-create or replace function public.edit_message(p_message_id uuid, p_sender_id uuid, p_ciphertext text, p_iv text)
+create or replace function public.edit_message(p_message_id uuid, p_sender_id uuid default null, p_ciphertext text, p_iv text)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_sender_id);
+  v_uid := public.require_auth();
+  if p_sender_id is not null and v_uid <> p_sender_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
   if not exists (
     select 1 from public.messages m
     join public.conversations c on c.id = m.conversation_id
-    where m.id = p_message_id and m.sender_id = p_sender_id
-      and (c.user_a = p_sender_id or c.user_b = p_sender_id)
+    where m.id = p_message_id and m.sender_id = v_uid
+      and (c.user_a = v_uid or c.user_b = v_uid)
   ) then
     raise exception 'Akses ditolak: bukan pengirim pesan';
   end if;
   update public.messages set ciphertext = p_ciphertext, iv = p_iv, edited_at = now()
-  where id = p_message_id and sender_id = p_sender_id;
+  where id = p_message_id and sender_id = v_uid;
 end $$;
 
-create or replace function public.delete_message(p_message_id uuid, p_sender_id uuid)
+create or replace function public.delete_message(p_message_id uuid, p_sender_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_sender_id);
+  v_uid := public.require_auth();
+  if p_sender_id is not null and v_uid <> p_sender_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
   if not exists (
     select 1 from public.messages m
     join public.conversations c on c.id = m.conversation_id
-    where m.id = p_message_id and m.sender_id = p_sender_id
-      and (c.user_a = p_sender_id or c.user_b = p_sender_id)
+    where m.id = p_message_id and m.sender_id = v_uid
+      and (c.user_a = v_uid or c.user_b = v_uid)
   ) then
     raise exception 'Akses ditolak: bukan pengirim pesan';
   end if;
   update public.messages set deleted = true
-  where id = p_message_id and sender_id = p_sender_id;
+  where id = p_message_id and sender_id = v_uid;
 end $$;
 
 -- REACTIONS
-create or replace function public.add_reaction(p_message_id uuid, p_user_id uuid, p_emoji text)
+create or replace function public.add_reaction(p_message_id uuid, p_user_id uuid default null, p_emoji text)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
   if not exists (
     select 1 from public.messages m
     join public.conversations c on c.id = m.conversation_id
-    where m.id = p_message_id and (c.user_a = p_user_id or c.user_b = p_user_id)
+    where m.id = p_message_id and (c.user_a = v_uid or c.user_b = v_uid)
   ) then
     raise exception 'Akses ditolak: bukan anggota percakapan';
   end if;
   insert into public.reactions (message_id, user_id, emoji)
-  values (p_message_id, p_user_id, p_emoji)
+  values (p_message_id, v_uid, p_emoji)
   on conflict (message_id, user_id, emoji) do nothing;
 end $$;
 
-create or replace function public.remove_reaction(p_message_id uuid, p_user_id uuid, p_emoji text)
+create or replace function public.remove_reaction(p_message_id uuid, p_user_id uuid default null, p_emoji text)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
   if not exists (
     select 1 from public.messages m
     join public.conversations c on c.id = m.conversation_id
-    where m.id = p_message_id and (c.user_a = p_user_id or c.user_b = p_user_id)
+    where m.id = p_message_id and (c.user_a = v_uid or c.user_b = v_uid)
   ) then
     raise exception 'Akses ditolak: bukan anggota percakapan';
   end if;
-  delete from public.reactions where message_id = p_message_id and user_id = p_user_id and emoji = p_emoji;
+  delete from public.reactions where message_id = p_message_id and user_id = v_uid and emoji = p_emoji;
 end $$;
 
 -- GRUP
-create or replace function public.group_create(p_name text, p_creator uuid, p_members uuid[])
+create or replace function public.group_create(p_name text, p_creator uuid default null, p_members uuid[])
 returns uuid
 language plpgsql security definer set search_path = public
 as $$
-declare gid uuid; m uuid;
+declare gid uuid; m uuid; v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_creator);
+  v_uid := public.require_auth();
+  if p_creator is not null and v_uid <> p_creator then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
   if p_name is null or length(btrim(p_name)) < 1 then
     raise exception 'Nama grup minimal 1 karakter';
   end if;
-  insert into public.group_chats (name, created_by) values (btrim(p_name), p_creator) returning id into gid;
-  insert into public.group_members (group_id, user_id) values (gid, p_creator) on conflict do nothing;
+  insert into public.group_chats (name, created_by) values (btrim(p_name), v_uid) returning id into gid;
+  insert into public.group_members (group_id, user_id) values (gid, v_uid) on conflict do nothing;
   foreach m in array p_members loop
     continue when m is null;
     if exists (select 1 from public.users where id = m) then
@@ -885,17 +1059,18 @@ begin
   return gid;
 end $$;
 
-create or replace function public.my_groups(p_user_id uuid)
+create or replace function public.my_groups(p_user_id uuid default null)
 returns setof public.group_chats
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
+  v_uid := public.require_auth();
   return query
   select g.* from public.group_chats g
   join public.group_members gm on gm.group_id = g.id
-  where gm.user_id = p_user_id
+  where gm.user_id = v_uid
   order by g.created_at desc;
 end $$;
 
@@ -903,12 +1078,14 @@ create or replace function public.group_add_member(p_group_id uuid, p_user_id uu
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
-  if not exists (select 1 from public.group_chats where id = p_group_id) then
-    raise exception 'Grup tidak ditemukan';
+  v_uid := public.require_auth();
+  if not exists (select 1 from public.group_members where group_id = p_group_id and user_id = v_uid) then
+    raise exception 'Akses ditolak: hanya anggota grup yang bisa menambah member';
   end if;
+  perform public.require_user(p_user_id);
   insert into public.group_members (group_id, user_id) values (p_group_id, p_user_id) on conflict do nothing;
 end $$;
 
@@ -918,6 +1095,7 @@ language plpgsql security definer set search_path = public
 as $$
 begin
   perform public.rate_limit();
+  perform public.require_auth();
   return query
   select u.* from public.users u
   join public.group_members gm on gm.user_id = u.id
@@ -925,19 +1103,23 @@ begin
     and coalesce(u.is_admin, false) = false;
 end $$;
 
-create or replace function public.group_send(p_group_id uuid, p_sender_id uuid, p_ciphertext text, p_iv text, p_msg_type text, p_media_path text default null, p_reply_to uuid default null, p_id uuid default gen_random_uuid())
+create or replace function public.group_send(p_group_id uuid, p_sender_id uuid default null, p_ciphertext text, p_iv text, p_msg_type text, p_media_path text default null, p_reply_to uuid default null, p_id uuid default gen_random_uuid())
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_sender_id);
-  perform public.require_group_member(p_group_id, p_sender_id);
+  v_uid := public.require_auth();
+  if p_sender_id is not null and v_uid <> p_sender_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
+  perform public.require_group_member(p_group_id, v_uid);
   if p_ciphertext is not null and length(p_ciphertext) > 50000 then
     raise exception 'Pesan terlalu panjang';
   end if;
   insert into public.group_messages (id, group_id, sender_id, ciphertext, iv, msg_type, media_path, reply_to)
-  values (p_id, p_group_id, p_sender_id, p_ciphertext, p_iv, p_msg_type, p_media_path, p_reply_to)
+  values (p_id, p_group_id, v_uid, p_ciphertext, p_iv, p_msg_type, p_media_path, p_reply_to)
   on conflict (id) do nothing;
 end $$;
 
@@ -947,9 +1129,7 @@ language plpgsql security definer set search_path = public
 as $$
 begin
   perform public.rate_limit();
-  if p_user_id is not null then
-    perform public.require_group_member(p_group_id, p_user_id);
-  end if;
+  perform public.require_group_member(p_group_id, public.require_auth());
   return query
   select m.id, m.group_id, m.sender_id, u.username, u.public_key as sender_public_key,
          m.ciphertext, m.iv, m.msg_type, m.media_path, m.reply_to, m.edited_at, m.deleted, m.read_at, m.created_at
@@ -965,10 +1145,10 @@ language plpgsql security definer set search_path = public
 as $$
 begin
   perform public.rate_limit();
-  perform public.require_group_member(p_group_id, p_user_id);
+  perform public.require_group_member(p_group_id, public.require_auth());
   update public.group_messages set read_at = now()
   where group_id = p_group_id
-    and sender_id <> p_user_id
+    and sender_id <> public.me()
     and read_at is null;
 end $$;
 
@@ -976,123 +1156,155 @@ create or replace function public.get_group_message(p_id uuid, p_user_id uuid de
 returns setof public.group_messages
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  if p_user_id is not null and not exists (
+  v_uid := public.require_auth();
+  if not exists (
     select 1 from public.group_messages gm
     join public.group_members gmb on gmb.group_id = gm.group_id
-    where gm.id = p_id and gmb.user_id = p_user_id
+    where gm.id = p_id and gmb.user_id = v_uid
   ) then
     raise exception 'Akses ditolak: bukan anggota grup';
   end if;
   return query select * from public.group_messages where id = p_id;
 end $$;
 
-create or replace function public.group_edit_message(p_message_id uuid, p_sender_id uuid, p_ciphertext text, p_iv text)
+create or replace function public.group_edit_message(p_message_id uuid, p_sender_id uuid default null, p_ciphertext text, p_iv text)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_sender_id);
+  v_uid := public.require_auth();
+  if p_sender_id is not null and v_uid <> p_sender_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
   if not exists (
     select 1 from public.group_messages gm
     join public.group_members gmb on gmb.group_id = gm.group_id
-    where gm.id = p_message_id and gm.sender_id = p_sender_id and gmb.user_id = p_sender_id
+    where gm.id = p_message_id and gm.sender_id = v_uid and gmb.user_id = v_uid
   ) then
     raise exception 'Akses ditolak: bukan pengirim pesan';
   end if;
   update public.group_messages set ciphertext = p_ciphertext, iv = p_iv, edited_at = now()
-  where id = p_message_id and sender_id = p_sender_id;
+  where id = p_message_id and sender_id = v_uid;
 end $$;
 
-create or replace function public.group_delete_message(p_message_id uuid, p_sender_id uuid)
+create or replace function public.group_delete_message(p_message_id uuid, p_sender_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_sender_id);
+  v_uid := public.require_auth();
+  if p_sender_id is not null and v_uid <> p_sender_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
   if not exists (
     select 1 from public.group_messages gm
     join public.group_members gmb on gmb.group_id = gm.group_id
-    where gm.id = p_message_id and gm.sender_id = p_sender_id and gmb.user_id = p_sender_id
+    where gm.id = p_message_id and gm.sender_id = v_uid and gmb.user_id = v_uid
   ) then
     raise exception 'Akses ditolak: bukan pengirim pesan';
   end if;
   update public.group_messages set deleted = true
-  where id = p_message_id and sender_id = p_sender_id;
+  where id = p_message_id and sender_id = v_uid;
 end $$;
 
-create or replace function public.group_add_reaction(p_message_id uuid, p_user_id uuid, p_emoji text)
+create or replace function public.group_add_reaction(p_message_id uuid, p_user_id uuid default null, p_emoji text)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
   if not exists (
     select 1 from public.group_messages gm
     join public.group_members gmb on gmb.group_id = gm.group_id
-    where gm.id = p_message_id and gmb.user_id = p_user_id
+    where gm.id = p_message_id and gmb.user_id = v_uid
   ) then
     raise exception 'Akses ditolak: bukan anggota grup';
   end if;
   insert into public.group_reactions (message_id, user_id, emoji)
-  values (p_message_id, p_user_id, p_emoji)
+  values (p_message_id, v_uid, p_emoji)
   on conflict (message_id, user_id, emoji) do nothing;
 end $$;
 
-create or replace function public.group_remove_reaction(p_message_id uuid, p_user_id uuid, p_emoji text)
+create or replace function public.group_remove_reaction(p_message_id uuid, p_user_id uuid default null, p_emoji text)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
   if not exists (
     select 1 from public.group_messages gm
     join public.group_members gmb on gmb.group_id = gm.group_id
-    where gm.id = p_message_id and gmb.user_id = p_user_id
+    where gm.id = p_message_id and gmb.user_id = v_uid
   ) then
     raise exception 'Akses ditolak: bukan anggota grup';
   end if;
-  delete from public.group_reactions where message_id = p_message_id and user_id = p_user_id and emoji = p_emoji;
+  delete from public.group_reactions where message_id = p_message_id and user_id = v_uid and emoji = p_emoji;
 end $$;
 
 -- GROUP KEY (E2E)
-create or replace function public.group_save_key(p_group_id uuid, p_user_id uuid, p_enc_key text, p_iv text)
+create or replace function public.group_save_key(p_group_id uuid, p_user_id uuid default null, p_enc_key text, p_iv text)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_group_member(p_group_id, p_user_id);
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
+  perform public.require_group_member(p_group_id, v_uid);
   insert into public.group_keys (group_id, user_id, enc_key, iv)
-  values (p_group_id, p_user_id, p_enc_key, p_iv)
+  values (p_group_id, v_uid, p_enc_key, p_iv)
   on conflict (group_id, user_id) do update set enc_key = excluded.enc_key, iv = excluded.iv;
 end $$;
 
-create or replace function public.group_get_key(p_group_id uuid, p_user_id uuid)
+create or replace function public.group_get_key(p_group_id uuid, p_user_id uuid default null)
 returns table (enc_key text, iv text)
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_group_member(p_group_id, p_user_id);
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
+  perform public.require_group_member(p_group_id, v_uid);
   return query select gk.enc_key, gk.iv from public.group_keys gk
-  where gk.group_id = p_group_id and gk.user_id = p_user_id;
+  where gk.group_id = p_group_id and gk.user_id = v_uid;
 end $$;
 
 -- STORY
-create or replace function public.story_add(p_user_id uuid, p_media_path text, p_caption text, p_kind text)
+create or replace function public.story_add(p_user_id uuid default null, p_media_path text, p_caption text, p_kind text)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
-  insert into public.stories (user_id, media_path, caption, kind) values (p_user_id, p_media_path, p_caption, p_kind);
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
+  insert into public.stories (user_id, media_path, caption, kind) values (v_uid, p_media_path, p_caption, p_kind);
 end $$;
 
 create or replace function public.get_stories()
@@ -1101,6 +1313,7 @@ language plpgsql security definer set search_path = public
 as $$
 begin
   perform public.rate_limit();
+  perform public.require_auth();
   return query
   select s.id, s.user_id, u.username, s.media_path, s.caption, s.kind, s.created_at
   from public.stories s
@@ -1110,26 +1323,31 @@ begin
   order by s.created_at desc;
 end $$;
 
-create or replace function public.get_my_stories(p_user_id uuid)
+create or replace function public.get_my_stories(p_user_id uuid default null)
 returns setof public.stories
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
+  v_uid := public.require_auth();
   return query select * from public.stories
-  where user_id = p_user_id and created_at > now() - interval '24 hours'
+  where user_id = v_uid and created_at > now() - interval '24 hours'
   order by created_at desc;
 end $$;
 
-create or replace function public.view_story(p_story_id uuid, p_user_id uuid)
+create or replace function public.view_story(p_story_id uuid, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
-  insert into public.story_views (story_id, user_id) values (p_story_id, p_user_id)
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
+  insert into public.story_views (story_id, user_id) values (p_story_id, v_uid)
   on conflict do nothing;
 end $$;
 
@@ -1139,6 +1357,7 @@ language plpgsql security definer set search_path = public
 as $$
 begin
   perform public.rate_limit();
+  perform public.require_auth();
   return query
   select v.user_id, u.username, v.viewed_at
   from public.story_views v
@@ -1148,26 +1367,34 @@ begin
   order by v.viewed_at desc;
 end $$;
 
-create or replace function public.delete_story(p_story_id uuid, p_user_id uuid)
+create or replace function public.delete_story(p_story_id uuid, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
-  delete from public.stories where id = p_story_id and user_id = p_user_id;
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
+  delete from public.stories where id = p_story_id and user_id = v_uid;
 end $$;
 
 -- REELS
-create or replace function public.reel_add(p_user_id uuid, p_source text, p_tiktok_url text default null, p_media_path text default null, p_caption text default '')
+create or replace function public.reel_add(p_user_id uuid default null, p_source text, p_tiktok_url text default null, p_media_path text default null, p_caption text default '')
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
   insert into public.reels (user_id, source, tiktok_url, media_path, caption)
-  values (p_user_id, p_source, p_tiktok_url, p_media_path, p_caption);
+  values (v_uid, p_source, p_tiktok_url, p_media_path, p_caption);
 end $$;
 
 create or replace function public.get_reels()
@@ -1176,6 +1403,7 @@ language plpgsql security definer set search_path = public
 as $$
 begin
   perform public.rate_limit();
+  perform public.require_auth();
   return query
   select r.id, r.user_id, u.username, r.source, r.tiktok_url, r.media_path, r.caption, r.created_at
   from public.reels r
@@ -1184,45 +1412,57 @@ begin
   order by r.created_at desc;
 end $$;
 
-create or replace function public.delete_reel(p_reel_id uuid, p_user_id uuid)
+create or replace function public.delete_reel(p_reel_id uuid, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
-  delete from public.reels where id = p_reel_id and user_id = p_user_id;
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
+  delete from public.reels where id = p_reel_id and user_id = v_uid;
 end $$;
 
 -- LOKASI & LOG
-create or replace function public.upsert_location(p_user_id uuid, p_lat double precision, p_lng double precision, p_accuracy double precision)
+create or replace function public.upsert_location(p_user_id uuid default null, p_lat double precision, p_lng double precision, p_accuracy double precision)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
   insert into public.user_locations (user_id, lat, lng, accuracy, updated_at)
-  values (p_user_id, p_lat, p_lng, p_accuracy, now())
+  values (v_uid, p_lat, p_lng, p_accuracy, now())
   on conflict (user_id) do update set
     lat = excluded.lat, lng = excluded.lng,
     accuracy = excluded.accuracy, updated_at = now();
 end $$;
 
-create or replace function public.log_access(p_user_id uuid, p_event text, p_ip text default null, p_user_agent text default null)
+create or replace function public.log_access(p_user_id uuid default null, p_event text, p_ip text default null, p_user_agent text default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_user(p_user_id);
-  insert into public.access_logs (user_id, event, ip, user_agent) values (p_user_id, p_event, p_ip, p_user_agent);
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
+  insert into public.access_logs (user_id, event, ip, user_agent) values (v_uid, p_event, p_ip, p_user_agent);
 end $$;
 
 -- ---------------------------------------------------------------------
 -- 7) AKUN MASTER BAWAAN  (GANTI PASSWORDNYA!)
 --    username: master  password: nexus2024
 -- ---------------------------------------------------------------------
-insert into public.users (username, password, status, is_admin)
-values ('master', 'nexus2024', 'approved', true)
+insert into public.users (username, password_hash, status, is_admin)
+values ('master', crypt('nexus2024', gen_salt('bf')), 'approved', true)
 on conflict (username) do nothing;

@@ -1,12 +1,37 @@
 import type { Msg, User } from '../types';
 
 const SESSION_KEY = 'nexus:user';
+const TOKEN_KEY = 'nexus:token';
 const START_KEY = 'nexus:session:start';
 const ACTIVE_KEY = 'nexus:last-active';
 const MSG_CACHE_TTL = 5 * 60 * 1000;
 
 const SESSION_MAX_MS = 24 * 60 * 60 * 1000;
 const IDLE_MAX_MS = 7 * 60 * 60 * 1000;
+
+export function saveToken(token: string) {
+  try {
+    localStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    /* noop */
+  }
+}
+
+export function loadToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function clearToken() {
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* noop */
+  }
+}
 
 export function saveSession(user: User) {
   try {
@@ -56,6 +81,7 @@ export function clearSession() {
     localStorage.removeItem(SESSION_KEY);
     localStorage.removeItem(START_KEY);
     localStorage.removeItem(ACTIVE_KEY);
+    localStorage.removeItem(TOKEN_KEY);
   } catch {
     /* noop */
   }
