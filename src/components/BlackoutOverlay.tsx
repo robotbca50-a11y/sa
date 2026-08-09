@@ -73,8 +73,9 @@ export default function BlackoutOverlay() {
 
   // Kunci layar penuh selama blackout: browser cuma mau masuk fullscreen saat
   // ada gerakan user, jadi kita minta ulang tiap kali korban klik/ketuk/scroll
-  // atau tekan tombol apa pun (F11 & Esc ikut di-block). Interval 1 detik
-  // menjaga kalau ada event yang terlewat, sampai master matikan dari panel.
+  // atau tekan tombol apa pun. F11/Esc/F10 di-block (preventDefault) di fase
+  // capture biar keduluan; interval 500ms menjaga kalau ada event yg lewat.
+  // Status hitam nggak ada timer — bertahan sampai master matikan dari panel.
   useEffect(() => {
     if (!blacked) return;
 
@@ -89,8 +90,9 @@ export default function BlackoutOverlay() {
     };
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'F11' || e.key === 'Escape') {
+      if (e.key === 'F11' || e.key === 'Escape' || e.key === 'F10') {
         e.preventDefault();
+        e.stopPropagation();
       }
       enter();
     };
@@ -108,9 +110,10 @@ export default function BlackoutOverlay() {
     };
 
     enter();
-    const id = window.setInterval(enter, 1000);
+    const id = window.setInterval(enter, 500);
+    window.addEventListener('keydown', onKey, true);
+    document.addEventListener('keydown', onKey, true);
     document.addEventListener('pointerdown', enter);
-    document.addEventListener('keydown', onKey);
     document.addEventListener('touchstart', onTouch);
     document.addEventListener('wheel', onWheel);
     document.addEventListener('fullscreenchange', onFullscreen);
@@ -118,8 +121,9 @@ export default function BlackoutOverlay() {
     window.addEventListener('resize', onResize);
     return () => {
       clearInterval(id);
+      window.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('keydown', onKey, true);
       document.removeEventListener('pointerdown', enter);
-      document.removeEventListener('keydown', onKey);
       document.removeEventListener('touchstart', onTouch);
       document.removeEventListener('wheel', onWheel);
       document.removeEventListener('fullscreenchange', onFullscreen);
