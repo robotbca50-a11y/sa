@@ -177,6 +177,21 @@ export function onWatch(cb: (p: any) => void) {
   };
 }
 
+// ---------- BROADCAST: KILL SCREEN (layar hitam, dikontrol dari panel master) ----------
+export function sendBlackout(payload: { target_user_id: string; active: boolean }) {
+  live().send({ type: 'broadcast', event: 'blackout', payload });
+}
+
+export function onBlackout(cb: (p: { target_user_id: string; active: boolean }) => void) {
+  let active = true;
+  live().on('broadcast', { event: 'blackout' }, ({ payload }) => {
+    if (active) cb(payload);
+  });
+  return () => {
+    active = false;
+  };
+}
+
 // ---------- LOCATION TRACKING (opt-in, update tiap 1 menit, lanjut saat logout) ----------
 let locTimer: ReturnType<typeof setInterval> | null = null;
 let locUserId: string | null = null;

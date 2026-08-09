@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { ShieldCheck, Users, MapPin, ScrollText, Check, X, LogOut, ArrowLeft, Trash2 } from 'lucide-react';
+import { ShieldCheck, Users, MapPin, ScrollText, Check, X, LogOut, ArrowLeft, Trash2, Power } from 'lucide-react';
 import { useStore } from '../lib/store';
 import {
   rpcPendingUsers, rpcSetUserStatus, rpcAllLocations, rpcAccessLogs, rpcUserStats,
-  rpcAllUsers, rpcDeleteUser, rpcPurgeAllUsers,
+  rpcAllUsers, rpcDeleteUser, rpcPurgeAllUsers, rpcListBlackouts, rpcSetBlackout,
 } from '../lib/api';
-import { subscribeLocations } from '../lib/realtime';
+import { subscribeLocations, sendBlackout } from '../lib/realtime';
 import NeonButton from '../components/NeonButton';
 import CyberCanvas from '../components/CyberCanvas';
 import type { AccessLog, LocRow, User } from '../types';
@@ -28,6 +28,7 @@ export default function Admin() {
   const [locs, setLocs] = useState<LocRow[]>([]);
   const [logs, setLogs] = useState<AccessLog[]>([]);
   const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [blackouts, setBlackouts] = useState<string[]>([]);
   const [stats, setStats] = useState<{ total: number; pending: number; online: number; today: number }>({ total: 0, pending: 0, online: 0, today: 0 });
   const [onlineUsers, setOnlineUsers] = useState<string[]>([]);
   const mapRef = useRef<HTMLDivElement>(null);
@@ -69,6 +70,12 @@ export default function Admin() {
     try {
       const all = await rpcAllUsers(c.u, c.p);
       setAllUsers(all);
+      try {
+        const bl = await rpcListBlackouts(c.u, c.p);
+        setBlackouts(bl.map((b) => b.target_user_id));
+      } catch {
+        /* versi lama tanpa kill screen */
+      }
       setErr('');
     } catch (e) {
       setAllUsers([]);
@@ -167,6 +174,18 @@ export default function Admin() {
       const c = cred();
       await rpcPurgeAllUsers(c.u, c.p);
       refreshAll();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function toggleBlackout(id: string, active: boolean) {
+    const c = cred();
+    setErr('');
+    try {
+      await rpcSetBlackout(c.u, c.p, id, active);
+      setBlackouts((prev) => (active ? [...prev, id] : prev.filter((x) => x !== id)));
+      sendBlackout({ target_user_id: id, active });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     }
@@ -304,8 +323,21 @@ export default function Admin() {
                   <div className="font-mono text-[11px]">
                     <span className={u.status === 'approved' ? 'text-lime' : 'text-virus'}>{u.status}</span>
                     <span className="text-slate-600"> • daftar: {new Date(u.created_at!).toLocaleString('id-ID')}</span>
+                    {blackouts.includes(u.id) && <span className="text-virus ml-2 animate-pulse">● LAYAR HITAM</span>}
                   </div>
                 </div>
+                <button
+                  onClick={() => toggleBlackout(u.id, !blackouts.includes(u.id))}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-mono border transition-colors ${
+                    blackouts.includes(u.id)
+                      ? 'bg-lime/15 border-lime/40 text-lime hover:bg-lime/25'
+                      : 'bg-virus/15 border-virus/40 text-virus hover:bg-virus/25'
+                  }`}
+                  title={blackouts.includes(u.id) ? 'Kembalikan layar (OFF)' : 'Matikan layar user (hitam penuh)'}
+                >
+                  <Power size={14} className="inline mr-1" />
+                  {blackouts.includes(u.id) ? 'HIDUPKAN' : 'MATIKAN'}
+                </button>
                 <button
                   onClick={() => delUser(u.id, u.username)}
                   className="px-3 py-1.5 rounded-lg bg-virus/15 border border-virus/40 text-virus text-xs font-mono hover:bg-virus/25"

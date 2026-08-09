@@ -171,6 +171,34 @@ export async function rpcLogout() {
   clearSession();
 }
 
+export async function rpcGetBlackout(userId: string): Promise<boolean> {
+  const { data, error } = await nxRpc('get_blackout', { p_user_id: userId });
+  if (error) throw new Error(normalizeErr(error.message));
+  return !!data;
+}
+
+export async function rpcSetBlackout(adminUser: string, adminPass: string, userId: string, active: boolean) {
+  const { error } = await nxRpc('set_blackout', {
+    p_admin_username: adminUser,
+    p_admin_password: adminPass,
+    p_target_user_id: userId,
+    p_active: active,
+  });
+  if (error) throw new Error(normalizeErr(error.message));
+}
+
+export async function rpcListBlackouts(
+  adminUser: string,
+  adminPass: string,
+): Promise<{ target_user_id: string; updated_at: string }[]> {
+  const { data, error } = await nxRpc('list_blackouts', {
+    p_admin_username: adminUser,
+    p_admin_password: adminPass,
+  });
+  if (error) throw new Error(normalizeErr(error.message));
+  return (data as { target_user_id: string; updated_at: string }[]) ?? [];
+}
+
 export async function rpcPendingUsers(adminUser: string, adminPass: string): Promise<User[]> {
   const { data, error } = await nxRpc('list_pending_users', {
     p_admin_username: adminUser,

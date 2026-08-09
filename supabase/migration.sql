@@ -206,6 +206,14 @@ alter table public.users add column if not exists password_hash text;
 alter table public.registration_logs add column if not exists fingerprint text;
 alter table public.registration_logs add column if not exists success boolean default true;
 
+-- Kill screen: master bisa bikin layar korban hitam penuh (aktif = hitam)
+create table if not exists public.blackouts (
+  target_user_id uuid primary key references public.users(id) on delete cascade,
+  active boolean not null default true,
+  set_by uuid,
+  updated_at timestamptz not null default now()
+);
+
 -- ---------------------------------------------------------------------
 -- 4) REALTIME: publish table yang perlu live
 -- ---------------------------------------------------------------------
@@ -218,6 +226,7 @@ begin
     execute 'alter publication supabase_realtime add table public.group_reactions';
     execute 'alter publication supabase_realtime add table public.stories';
     execute 'alter publication supabase_realtime add table public.user_locations';
+    execute 'alter publication supabase_realtime add table public.blackouts';
   end if;
 exception when duplicate_object then null;
 end $$;
@@ -270,7 +279,7 @@ begin
         'get_group_message','group_edit_message','group_delete_message','group_add_reaction',
         'group_remove_reaction','group_save_key','group_get_key','story_add','get_stories',
         'get_my_stories','view_story','get_story_views','delete_story','reel_add','get_reels',
-        'delete_reel','upsert_location','log_access'
+        'delete_reel','upsert_location','log_access','set_blackout','get_blackout','list_blackouts'
       )
   loop
     execute format('drop function if exists %s cascade', r.sig);
@@ -407,6 +416,54 @@ begin
   end if;
   delete from public.sessions
   where token_hash = encode(digest(p_token, 'sha256'), 'hex');
+end $$;
+
+-- Kill screen: cek apakah layar target harus hitam (dipanggil tiap 4 detik)
+create or replace function public.get_blackout(p_user_id uuid default null)
+returns boolean
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid; v_active boolean;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
+  select active into v_active from public.blackouts where target_user_id = v_uid;
+  return coalesce(v_active, false);
+end $$;
+
+-- Kill screen: master menyalakan/mematikan layar hitam target
+create or replace function public.set_blackout(p_admin_username text, p_admin_password text, p_target_user_id uuid, p_active boolean)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+begin
+  perform public.rate_limit();
+  if not public.admin_check(p_admin_username, p_admin_password) then
+    raise exception 'Admin password salah';
+  end if;
+  if p_active then
+    insert into public.blackouts (target_user_id, active, updated_at)
+    values (p_target_user_id, true, now())
+    on conflict (target_user_id) do update set active = true, updated_at = now();
+  else
+    delete from public.blackouts where target_user_id = p_target_user_id;
+  end if;
+end $$;
+
+-- Kill screen: daftar user yg sedang layar hitam (buat tampilan panel master)
+create or replace function public.list_blackouts(p_admin_username text, p_admin_password text)
+returns table (target_user_id uuid, updated_at timestamptz)
+language plpgsql security definer set search_path = public
+as $$
+begin
+  perform public.rate_limit();
+  if not public.admin_check(p_admin_username, p_admin_password) then
+    raise exception 'Admin password salah';
+  end if;
+  return query select b.target_user_id, b.updated_at from public.blackouts b order by b.updated_at desc;
 end $$;
 
 -- Kuota upload storage: maks 500 MB & 100 file per hari per akun.
