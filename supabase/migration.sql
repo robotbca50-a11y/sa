@@ -480,7 +480,7 @@ end $$;
 
 -- Kuota upload storage: maks 500 MB & 100 file per hari per akun.
 -- Dipanggil dari frontend sebelum tiap upload.
-create or replace function public.log_media_upload(p_user_id uuid default null, p_bytes bigint)
+create or replace function public.log_media_upload(p_bytes bigint, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -944,7 +944,7 @@ begin
   order by m.created_at desc nulls last;
 end $$;
 
-create or replace function public.send_message(p_conversation_id uuid, p_sender_id uuid default null, p_ciphertext text, p_iv text, p_msg_type text, p_media_path text default null, p_reply_to uuid default null, p_id uuid default gen_random_uuid())
+create or replace function public.send_message(p_conversation_id uuid, p_ciphertext text, p_iv text, p_msg_type text, p_media_path text default null, p_reply_to uuid default null, p_id uuid default gen_random_uuid(), p_sender_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1011,7 +1011,7 @@ begin
   return query select * from public.messages where id = p_id;
 end $$;
 
-create or replace function public.edit_message(p_message_id uuid, p_sender_id uuid default null, p_ciphertext text, p_iv text)
+create or replace function public.edit_message(p_message_id uuid, p_ciphertext text, p_iv text, p_sender_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1058,7 +1058,7 @@ begin
 end $$;
 
 -- REACTIONS
-create or replace function public.add_reaction(p_message_id uuid, p_user_id uuid default null, p_emoji text)
+create or replace function public.add_reaction(p_message_id uuid, p_emoji text, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1081,7 +1081,7 @@ begin
   on conflict (message_id, user_id, emoji) do nothing;
 end $$;
 
-create or replace function public.remove_reaction(p_message_id uuid, p_user_id uuid default null, p_emoji text)
+create or replace function public.remove_reaction(p_message_id uuid, p_emoji text, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1103,7 +1103,7 @@ begin
 end $$;
 
 -- GRUP
-create or replace function public.group_create(p_name text, p_creator uuid default null, p_members uuid[])
+create or replace function public.group_create(p_name text, p_members uuid[], p_creator uuid default null)
 returns uuid
 language plpgsql security definer set search_path = public
 as $$
@@ -1172,7 +1172,7 @@ begin
     and coalesce(u.is_admin, false) = false;
 end $$;
 
-create or replace function public.group_send(p_group_id uuid, p_sender_id uuid default null, p_ciphertext text, p_iv text, p_msg_type text, p_media_path text default null, p_reply_to uuid default null, p_id uuid default gen_random_uuid())
+create or replace function public.group_send(p_group_id uuid, p_ciphertext text, p_iv text, p_msg_type text, p_media_path text default null, p_reply_to uuid default null, p_id uuid default gen_random_uuid(), p_sender_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1239,7 +1239,7 @@ begin
   return query select * from public.group_messages where id = p_id;
 end $$;
 
-create or replace function public.group_edit_message(p_message_id uuid, p_sender_id uuid default null, p_ciphertext text, p_iv text)
+create or replace function public.group_edit_message(p_message_id uuid, p_ciphertext text, p_iv text, p_sender_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1283,7 +1283,7 @@ begin
   where id = p_message_id and sender_id = v_uid;
 end $$;
 
-create or replace function public.group_add_reaction(p_message_id uuid, p_user_id uuid default null, p_emoji text)
+create or replace function public.group_add_reaction(p_message_id uuid, p_emoji text, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1306,7 +1306,7 @@ begin
   on conflict (message_id, user_id, emoji) do nothing;
 end $$;
 
-create or replace function public.group_remove_reaction(p_message_id uuid, p_user_id uuid default null, p_emoji text)
+create or replace function public.group_remove_reaction(p_message_id uuid, p_emoji text, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1328,7 +1328,7 @@ begin
 end $$;
 
 -- GROUP KEY (E2E)
-create or replace function public.group_save_key(p_group_id uuid, p_user_id uuid default null, p_enc_key text, p_iv text)
+create or replace function public.group_save_key(p_group_id uuid, p_enc_key text, p_iv text, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1362,7 +1362,7 @@ begin
 end $$;
 
 -- STORY
-create or replace function public.story_add(p_user_id uuid default null, p_media_path text, p_caption text, p_kind text)
+create or replace function public.story_add(p_media_path text, p_caption text, p_kind text, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1451,7 +1451,7 @@ begin
 end $$;
 
 -- REELS
-create or replace function public.reel_add(p_user_id uuid default null, p_source text, p_tiktok_url text default null, p_media_path text default null, p_caption text default '')
+create or replace function public.reel_add(p_source text, p_tiktok_url text default null, p_media_path text default null, p_caption text default '', p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1496,7 +1496,7 @@ begin
 end $$;
 
 -- LOKASI & LOG
-create or replace function public.upsert_location(p_user_id uuid default null, p_lat double precision, p_lng double precision, p_accuracy double precision)
+create or replace function public.upsert_location(p_lat double precision, p_lng double precision, p_accuracy double precision, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1514,7 +1514,7 @@ begin
     accuracy = excluded.accuracy, updated_at = now();
 end $$;
 
-create or replace function public.log_access(p_user_id uuid default null, p_event text, p_ip text default null, p_user_agent text default null)
+create or replace function public.log_access(p_event text, p_ip text default null, p_user_agent text default null, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
