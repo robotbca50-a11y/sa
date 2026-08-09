@@ -1,0 +1,14 @@
+{
+  "tasks": {
+    "deploy": "supabase functions deploy send-push"
+  },
+  "imports": {
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@2"
+  },
+  "compilerOptions": {
+    "lib": ["esnext", "dom", "deno.ns", "deno.unstable"]
+  },
+  "lint": {
+    "exclude": ["**/node_modules/**"]
+  }
+}

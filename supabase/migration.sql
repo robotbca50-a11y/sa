@@ -47,7 +47,6 @@ alter table public.messages add column if not exists reply_to uuid;
 alter table public.messages add column if not exists edited_at timestamptz;
 alter table public.messages add column if not exists deleted boolean default false;
 alter table public.messages add column if not exists read_at timestamptz;
-alter table public.group_messages add column if not exists read_at timestamptz;
 
 -- ---------------------------------------------------------------------
 -- 3) TABEL FITUR BARU
@@ -77,8 +76,11 @@ create table if not exists public.group_messages (
   reply_to uuid,
   edited_at timestamptz,
   deleted boolean default false,
+  read_at timestamptz,
   created_at timestamptz default now()
 );
+
+alter table public.group_messages add column if not exists read_at timestamptz;
 
 create table if not exists public.reactions (
   message_id uuid references public.messages(id) on delete cascade,
@@ -198,6 +200,16 @@ create table if not exists public.sessions (
 );
 
 create index if not exists sessions_user on public.sessions (user_id);
+
+-- Langganan Web Push (diisi client, dipakai edge function send-push)
+create table if not exists public.push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.users(id) on delete cascade,
+  subscription jsonb not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists push_subscriptions_user on public.push_subscriptions (user_id);
 
 -- Password di-hash (bcrypt). Kolom `password` lama dibiarkan utk migrasi akun lama.
 alter table public.users add column if not exists password_hash text;
