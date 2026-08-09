@@ -1,0 +1,1051 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  Ghost, Bell, LogOut, MessageSquare, MonitorPlay,
+  Music,
+} from 'lucide-react';
+import { useStore } from '../../lib/store';
+import {
+  rpcListUsers, rpcMyConversations, rpcMyGroups, rpcGetOrCreateConversation,
+  rpcGetMessages, rpcGetGroupMessages, rpcSendMessage, rpcGroupSend,
+  rpcAddReaction, rpcRemoveReaction, rpcGroupAddReaction, rpcGroupRemoveReaction,
+  rpcEditMessage, rpcDeleteMessage, rpcGroupEditMessage, rpcGroupDeleteMessage,
+  rpcGroupCreate, rpcGroupAddMember, rpcGroupMembers, rpcGetGroupKey, rpcSaveGroupKey,
+  rpcMarkMessagesRead, rpcMarkGroupMessagesRead,
+  rpcLogAccess, uploadMedia, toastErr,
+} from '../../lib/api';
+import {
+  deriveSharedKey, encryptText, decryptText, randomAESKey, exportAESKey, encryptToRecipient,
+  decryptFromSender, importAESKey, bufToB64,
+} from '../../lib/crypto';
+import { initPresence, stopPresence } from '../../lib/realtime';
+import { subscribeMessages, subscribeGroupMessages, subscribeReactions, subscribeGroupReactions, onTyping, onCall } from '../../lib/realtime';
+import { initNotifications, requestNotifPermission, appNotify, updateTitle } from '../../lib/notify';
+import { decodeMessage, evictCache, clearCache } from '../../lib/decrypt';
+import { clearSession, readMsgCache, writeMsgCache } from '../../lib/session';
+import Conversation from '../chat/Conversation';
+import ConversationList from '../chat/ConversationList';
+import { NewChatModal, NewGroupModal, AddMemberModal, GhostSettingsModal } from '../chat/modals';
+import Stories from '../features/Stories';
+import Reels from '../features/Reels';
+import WatchParty from '../features/WatchParty';
+import VideoCall, { IncomingCallOverlay } from '../features/VideoCall';
+import CyberBg from './CyberBg';
+import type { ConversationItem, Group, Msg, Reaction, User } from '../../types';
+
+const DMK = (id: string) => `dm:${id}`;
+const GRK = (id: string) => `grp:${id}`;
+
+async function rpcRetry<T>(fn: () => Promise<T>, tries = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (i < tries - 1) await new Promise((r) => setTimeout(r, 700 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+function readCache<T>(key: string): T | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const { t, ttl, v } = JSON.parse(raw) as { t: number; ttl?: number; v: T };
+    if (Date.now() - t > (ttl ?? 24 * 60 * 60 * 1000)) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    return v;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache<T>(key: string, v: T, ttl: number) {
+  try {
+    localStorage.setItem(key, JSON.stringify({ t: Date.now(), ttl, v }));
+  } catch {
+    /* storage penuh — abaikan */
+  }
+}
+
+export default function ChatApp() {
+  const me = useStore((s) => s.me);
+  const privateKey = useStore((s) => s.privateKey);
+  const ghostMode = useStore((s) => s.ghostMode);
+  const onlineSet = useStore((s) => s.onlineSet);
+  const unread = useStore((s) => s.unread);
+  const setView = useStore((s) => s.setView);
+  const setSession = useStore((s) => s.setSession);
+  const setIncoming = useStore((s) => s.setIncoming);
+  const incoming = useStore((s) => s.incoming);
+
+  const [users, setUsers] = useState<User[]>([]);
+  const [dms, setDms] = useState<ConversationItem[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [active, setActive] = useState<{ key: string; kind: 'dm' | 'group' } | null>(null);
+  const [msgMap, setMsgMap] = useState<Record<string, Msg[]>>({});
+  const [keyMap, setKeyMap] = useState<Record<string, CryptoKey>>({});
+  const [reactMap, setReactMap] = useState<Record<string, Reaction[]>>({});
+  const [typing, setTyping] = useState<Record<string, string[]>>({});
+  const [tab, setTab] = useState<'chats' | 'reels' | 'watch'>('chats');
+  const [modal, setModal] = useState<null | 'newchat' | 'newgroup' | 'ghost'>(null);
+  const [addMemberFor, setAddMemberFor] = useState<string | null>(null);
+  const [groupMembers, setGroupMembers] = useState<Record<string, User[]>>({});
+  const [call, setCall] = useState<{ mode: 'caller' | 'callee'; peer: User } | null>(null);
+
+  const meRef = useRef(me);
+  const keyRef = useRef(privateKey);
+  const activeRef = useRef(active);
+  const dmsRef = useRef(dms);
+  const groupsRef = useRef(groups);
+  const msgMapRef = useRef(msgMap);
+  const keyMapRef = useRef(keyMap);
+  const userMapRef = useRef<Record<string, string>>({});
+  const inCallRef = useRef(false);
+
+  meRef.current = me;
+  keyRef.current = privateKey;
+  activeRef.current = active;
+  dmsRef.current = dms;
+  groupsRef.current = groups;
+  msgMapRef.current = msgMap;
+  keyMapRef.current = keyMap;
+  userMapRef.current = Object.fromEntries(users.map((u) => [u.id, u.username]));
+
+  // ---------- LOAD ----------
+  useEffect(() => {
+    if (!me || !privateKey) return;
+    initPresence();
+    initNotifications();
+    rpcLogAccess(me.id, 'open').catch(() => {});
+
+    const cached = readCache<{ users: User[]; dms: any[] }>(`nexus:cache:${me.id}`);
+    if (cached) {
+      setUsers(cached.users);
+      setDms(
+        (cached.dms ?? []).map((r) => ({
+          key: DMK(r.id),
+          kind: 'dm' as const,
+          id: r.id,
+          peerId: r.peer_id,
+          name: r.peer_username ?? 'unknown',
+          public_key: r.peer_public_key,
+          online: false,
+          lastAt: r.last_at,
+          lastType: r.last_type,
+          lastCiphertext: r.last_ciphertext,
+          lastIv: r.last_iv,
+          lastMsg: r.last_type === 'text' ? '🔒 enkripsi...' : `[${r.last_type}]`,
+        })),
+      );
+    }
+
+    Promise.all([rpcListUsers(), rpcMyConversations(me.id), rpcMyGroups(me.id)])
+      .then(([us, cv, gr]) => {
+        setUsers(us);
+        setGroups(gr);
+        writeCache(`nexus:cache:${me.id}`, { users: us, dms: cv }, 5 * 60 * 1000);
+        const items: ConversationItem[] = (cv as any[]).map((r) => ({
+          key: DMK(r.id),
+          kind: 'dm',
+          id: r.id,
+          peerId: r.peer_id,
+          name: r.peer_username ?? 'unknown',
+          public_key: r.peer_public_key,
+          online: false,
+          lastAt: r.last_at,
+          lastType: r.last_type,
+          lastCiphertext: r.last_ciphertext,
+          lastIv: r.last_iv,
+          lastMsg: r.last_type === 'text' ? '🔒 enkripsi...' : `[${r.last_type}]`,
+        }));
+        setDms(items);
+        items.forEach((it) => decryptPreview(it).catch(() => {}));
+      })
+      .catch((e) => appNotify('GAGAL MUAT DATA', toastErr(e), { icon: '⚠️' }));
+
+    // ---------- SUBSCRIPTIONS ----------
+    const subs = [
+      subscribeMessages((m, kind) => onDmEvent(m as Msg, kind)),
+      subscribeGroupMessages((m, kind) => onGroupEvent(m as Msg, kind)),
+      subscribeReactions((r, k) => onReactEvent(r, k)),
+      subscribeGroupReactions((r, k) => onReactEvent(r, k)),
+    ];
+
+    const offTyping = onTyping((key, isGroup, userId) => {
+      const uname = userMapRef.current[userId] ?? 'seseorang';
+      setTyping((t) => ({ ...t, [key]: Array.from(new Set([...(t[key] ?? []), uname])) }));
+      setTimeout(() => {
+        setTyping((t) => ({ ...t, [key]: (t[key] ?? []).filter((n) => n !== uname) }));
+      }, 4000);
+    });
+
+    const offCall = onCall((event, data) => {
+      if (event === 'call-invite' && data.to === meRef.current?.id && !inCallRef.current) {
+        const from = data.from;
+        const fromUser = users.find((u) => u.id === from);
+        if (fromUser) {
+          setIncoming(fromUser);
+          appNotify('Panggilan masuk', `${fromUser.username} nelpon kamu`, {
+            icon: '📞',
+            onClick: () => setIncoming(fromUser),
+          });
+        }
+      }
+      if (event === 'call-cancel' && data.to === meRef.current?.id) {
+        setIncoming(null);
+      }
+    });
+
+    const syncAll = () => {
+      refreshDms();
+      const meId = meRef.current?.id;
+      if (meId) rpcMyGroups(meId).then(setGroups).catch(() => {});
+      const a = activeRef.current;
+      if (a && !(msgMapRef.current[a.key] ?? []).some((m) => m.pending)) {
+        refetchActive();
+      }
+    };
+    const syncIv = setInterval(syncAll, 15_000);
+    const onFocus = () => syncAll();
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      subs.forEach((s) => s.unsubscribe());
+      offTyping();
+      offCall();
+      clearInterval(syncIv);
+      window.removeEventListener('focus', onFocus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function decryptPreview(it: ConversationItem) {
+    if (!keyRef.current || !it.public_key) return;
+    try {
+      const k = await deriveSharedKey(keyRef.current, it.public_key);
+      keyMapRef.current[it.key] = k;
+      setKeyMap({ ...keyMapRef.current });
+      if (it.lastType === 'text' && it.lastCiphertext && it.lastIv) {
+        const text = await decryptText(k, it.lastCiphertext, it.lastIv);
+        setDms((d) => d.map((x) => (x.key === it.key ? { ...x, lastMsg: text.slice(0, 80) } : x)));
+      }
+    } catch {
+      /* noop */
+    }
+  }
+
+  // ---------- EVENT HANDLERS ----------
+  async function refreshDms() {
+    const meId = meRef.current?.id;
+    if (!meId) return;
+    try {
+      const cv = await rpcMyConversations(meId);
+      const items: ConversationItem[] = (cv as any[]).map((r) => {
+        const existing = dmsRef.current.find((x) => x.key === DMK(r.id));
+        return {
+          key: DMK(r.id),
+          kind: 'dm' as const,
+          id: r.id,
+          peerId: r.peer_id,
+          name: r.peer_username ?? 'unknown',
+          public_key: r.peer_public_key,
+          online: false,
+          lastAt: r.last_at,
+          lastType: r.last_type,
+          lastCiphertext: r.last_ciphertext,
+          lastIv: r.last_iv,
+          lastMsg: existing?.lastMsg ?? (r.last_type === 'text' ? '🔒 enkripsi...' : `[${r.last_type}]`),
+        };
+      });
+      dmsRef.current = items;
+      setDms(items);
+      items.forEach((it) => decryptPreview(it).catch(() => {}));
+    } catch {
+      /* noop */
+    }
+  }
+
+  function mergeMsg(key: string, m: Msg) {
+    const list = msgMapRef.current[key];
+    if (!list) {
+      if (activeRef.current?.key === key) refetchActive();
+      return;
+    }
+    const idx = list.findIndex((x) => x.id === m.id);
+    if (idx === -1) {
+      if (activeRef.current?.key === key) refetchActive();
+      return;
+    }
+    const merged = { ...list[idx] };
+    (Object.keys(m) as (keyof Msg)[]).forEach((k) => {
+      const v = m[k];
+      if (v !== undefined && v !== null) (merged as any)[k] = v;
+    });
+    const next = [...list];
+    next[idx] = merged;
+    msgMapRef.current = { ...msgMapRef.current, [key]: next };
+    setMsgMap(msgMapRef.current);
+    writeMsgCache(key, next);
+  }
+
+  function markRead(key: string) {
+    if (!meRef.current) return;
+    if (key.startsWith('dm:')) rpcMarkMessagesRead(meRef.current.id, key.replace('dm:', '')).catch(() => {});
+    else rpcMarkGroupMessagesRead(meRef.current.id, key.replace('grp:', '')).catch(() => {});
+  }
+
+  async function onDmEvent(m: Msg, kind: string) {
+    if (!m) return;
+    const key = DMK(m.conversation_id ?? '');
+    if (kind === 'UPDATE' || kind === 'DELETE') {
+      evictCache(m.id);
+      mergeMsg(key, m);
+      refreshDms();
+      if (activeRef.current?.key === key) markRead(key);
+      return;
+    }
+    if (m.sender_id === meRef.current?.id) {
+      appendRaw(key, m);
+      previewDm(key, m);
+      return;
+    }
+    const isActive = activeRef.current?.key === key;
+    if (isActive) {
+      appendRaw(key, m);
+      previewDm(key, m);
+      const st = useStore.getState();
+      st.clearUnread(key);
+      markRead(key);
+    } else {
+      useStore.getState().addUnread(key);
+      updateTitle(Object.values(useStore.getState().unread).reduce((a, b) => a + b, 0));
+      previewDm(key, m);
+      if (!dmsRef.current.some((d) => d.key === key)) refreshDms();
+      const peerName = dmsRef.current.find((d) => d.key === key)?.name ?? 'Pesan baru';
+      decryptForNotify(key, m, peerName);
+    }
+  }
+
+  async function onGroupEvent(m: Msg, kind: string) {
+    if (!m) return;
+    const key = GRK(m.group_id ?? '');
+    if (kind === 'UPDATE' || kind === 'DELETE') {
+      evictCache(m.id);
+      mergeMsg(key, m);
+      if (activeRef.current?.key === key) markRead(key);
+      return;
+    }
+    if (m.sender_id === meRef.current?.id) {
+      appendRaw(key, m);
+      return;
+    }
+    const isActive = activeRef.current?.key === key;
+    if (isActive) {
+      appendRaw(key, m);
+      useStore.getState().clearUnread(key);
+      markRead(key);
+    } else {
+      useStore.getState().addUnread(key);
+      updateTitle(Object.values(useStore.getState().unread).reduce((a, b) => a + b, 0));
+      const gName = groupsRef.current.find((g) => GRK(g.id) === key)?.name ?? 'Grup';
+      decryptForNotify(key, m, gName);
+    }
+  }
+
+  async function decryptForNotify(key: string, m: Msg, who: string) {
+    const k = keyMapRef.current[key];
+    if (!k || !m.ciphertext) {
+      appNotify(who, m.msg_type === 'text' ? '🔒 Pesan terenkripsi' : `📎 ${m.msg_type}`, { icon: '💬' });
+      return;
+    }
+    try {
+      const d = await decodeMessage(m, k);
+      const body = d.text || `[${m.msg_type}]`;
+      appNotify(who, body, { icon: '💬' });
+    } catch {
+      appNotify(who, '🔒 Pesan terenkripsi', { icon: '💬' });
+    }
+  }
+
+  function onReactEvent(r: Reaction, kind: string) {
+    if (!r) return;
+    setReactMap((map) => {
+      const arr = map[r.message_id] ?? [];
+      const filtered = kind === 'DELETE' ? arr.filter((x) => !(x.user_id === r.user_id && x.emoji === r.emoji)) : arr;
+      if (kind === 'INSERT' && !filtered.some((x) => x.user_id === r.user_id && x.emoji === r.emoji)) {
+        filtered.push(r);
+      }
+      return { ...map, [r.message_id]: filtered };
+    });
+  }
+
+  function appendRaw(key: string, m: Msg) {
+    const enriched: Msg = m.username ? m : { ...m, username: userMapRef.current[m.sender_id] ?? 'user' };
+    const prev = msgMapRef.current[key] ?? [];
+    const base = enriched.sender_id === meRef.current?.id ? prev.filter((x) => !x.pending) : prev;
+    msgMapRef.current = {
+      ...msgMapRef.current,
+      [key]: [...base.filter((x) => x.id !== enriched.id), enriched].sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+      ),
+    };
+    setMsgMap(msgMapRef.current);
+    writeMsgCache(key, msgMapRef.current[key]);
+  }
+
+  async function previewDm(key: string, m: Msg) {
+    let text = '';
+    if (m.msg_type === 'text' && m.ciphertext) {
+      const k = keyMapRef.current[key];
+      if (k) {
+        try {
+          text = (await decodeMessage(m, k)).text.slice(0, 80);
+        } catch {
+          text = '[🔒]';
+        }
+      } else {
+        text = '[🔒]';
+      }
+    } else {
+      text = `[${m.msg_type}]`;
+    }
+    const upd = {
+      lastMsg: text,
+      lastType: m.msg_type,
+      lastCiphertext: m.ciphertext || undefined,
+      lastIv: m.iv ?? undefined,
+      lastAt: m.created_at,
+    };
+    dmsRef.current = dmsRef.current
+      .map((x) => (x.key === key ? { ...x, ...upd } : x))
+      .sort((a, b) => (b.lastAt ?? '').localeCompare(a.lastAt ?? ''));
+    setDms(dmsRef.current);
+  }
+
+  async function fetchMsgs(key: string, force = false): Promise<Msg[]> {
+    if (!force) {
+      const cached = readMsgCache(key);
+      if (cached) return cached;
+    }
+    const id = key.startsWith('dm:') ? key.replace('dm:', '') : key.replace('grp:', '');
+    const rows = key.startsWith('dm:') ? await rpcGetMessages(id) : await rpcGetGroupMessages(id);
+    writeMsgCache(key, rows);
+    return rows;
+  }
+
+  function storeMsgs(key: string, rows: Msg[]) {
+    msgMapRef.current = { ...msgMapRef.current, [key]: rows };
+    setMsgMap(msgMapRef.current);
+    writeMsgCache(key, rows);
+  }
+
+  const refetchActive = useCallback(async () => {
+    const a = activeRef.current;
+    if (!a || !keyRef.current) return;
+    try {
+      const rows = await fetchMsgs(a.key, true);
+      storeMsgs(a.key, rows);
+    } catch {
+      /* noop */
+    }
+  }, []);
+
+  // ---------- OPEN CONVERSATION ----------
+  async function openDm(item: ConversationItem) {
+    setTab('chats');
+    const key = item.key;
+    const peer = users.find((u) => u.id === item.peerId) ?? {
+      id: item.peerId ?? '',
+      username: item.name,
+      public_key: item.public_key,
+    };
+    if (!keyMapRef.current[key] && privateKey && peer.public_key) {
+      try {
+        const k = await deriveSharedKey(privateKey, peer.public_key);
+        keyMapRef.current[key] = k;
+        setKeyMap({ ...keyMapRef.current });
+      } catch {
+        appNotify('GAGAL BUKA', 'Public key tidak valid.', { icon: '⚠️' });
+        return;
+      }
+    }
+    setActive({ key, kind: 'dm' });
+    useStore.getState().clearUnread(key);
+    updateTitle(Object.values(useStore.getState().unread).reduce((a, b) => a + b, 0));
+    markRead(key);
+    if (!msgMapRef.current[key]) {
+      try {
+        const rows = await fetchMsgs(key);
+        storeMsgs(key, rows);
+      } catch {
+        /* noop */
+      }
+    }
+  }
+
+  async function openGroup(item: ConversationItem) {
+    setTab('chats');
+    const key = item.key;
+    const gid = key.replace('grp:', '');
+    setActive({ key, kind: 'group' });
+    useStore.getState().clearUnread(key);
+    markRead(key);
+
+    const members = groupMembers[gid] ?? (await rpcGroupMembers(gid).catch(() => []));
+    if (!groupMembers[gid]) setGroupMembers((m) => ({ ...m, [gid]: members }));
+
+    if (!keyMapRef.current[key]) {
+      try {
+        const mine = await rpcGetGroupKey(gid, me!.id);
+        if (mine) {
+          const creator = members.find((u) => u.id === groupsRef.current.find((g) => g.id === gid)?.created_by);
+          if (creator?.public_key && keyRef.current) {
+            const raw = await decryptFromSender(keyRef.current, creator.public_key, mine.enc_key, mine.iv);
+            const k = await importAESKey(raw);
+            keyMapRef.current[key] = k;
+            setKeyMap({ ...keyMapRef.current });
+          }
+        }
+      } catch {
+        /* key gagal dibuka */
+      }
+    }
+
+    if (!msgMapRef.current[key]) {
+      const rows = await fetchMsgs(key).catch(() => [] as Msg[]);
+      storeMsgs(key, rows);
+    }
+  }
+
+  // ---------- SEND ----------
+  function patchLocalMsg(key: string, id: string, patch: Partial<Msg>) {
+    const list = msgMapRef.current[key] ?? [];
+    const idx = list.findIndex((x) => x.id === id);
+    if (idx === -1) return;
+    const next = [...list];
+    next[idx] = { ...next[idx], ...patch };
+    msgMapRef.current = { ...msgMapRef.current, [key]: next };
+    setMsgMap(msgMapRef.current);
+    writeMsgCache(key, next);
+  }
+
+  async function resendMsg(m: Msg) {
+    const a = activeRef.current;
+    if (!a || !me) return;
+    const key = a.key;
+    patchLocalMsg(key, m.id, { pending: true, failed: false });
+    try {
+      if (a.kind === 'dm') {
+        await rpcRetry(() =>
+          rpcSendMessage({
+            conversationId: key.replace('dm:', ''),
+            senderId: me.id,
+            ct: m.ciphertext,
+            iv: m.iv ?? '',
+            type: m.msg_type,
+            path: m.media_path ?? null,
+            replyTo: m.reply_to ?? null,
+            id: m.id,
+          }),
+        );
+      } else {
+        await rpcRetry(() =>
+          rpcGroupSend({
+            groupId: key.replace('grp:', ''),
+            senderId: me.id,
+            ct: m.ciphertext,
+            iv: m.iv ?? '',
+            type: m.msg_type,
+            path: m.media_path ?? null,
+            replyTo: m.reply_to ?? null,
+            id: m.id,
+          }),
+        );
+      }
+      refetchActive();
+    } catch (e) {
+      patchLocalMsg(key, m.id, { pending: false, failed: true });
+      appNotify('GAGAL KIRIM ULANG', toastErr(e), { icon: '⚠️' });
+    }
+  }
+
+  async function sendText(text: string, replyTo?: string | null) {
+    const a = activeRef.current;
+    if (!a) return;
+    const k = keyMapRef.current[a.key];
+    if (!k) return;
+    const enc = await encryptText(k, text).catch((e) => {
+      appNotify('GAGAL ENKRIPSI', toastErr(e), { icon: '⚠️' });
+      return null;
+    });
+    if (!enc) return;
+    const { ciphertext, iv } = enc;
+    const localId = crypto.randomUUID();
+    const localMsg: Msg = {
+      id: localId,
+      conversation_id: a.kind === 'dm' ? a.key.replace('dm:', '') : undefined,
+      group_id: a.kind === 'group' ? a.key.replace('grp:', '') : undefined,
+      sender_id: me!.id,
+      username: me!.username,
+      ciphertext,
+      iv,
+      msg_type: 'text',
+      reply_to: replyTo ?? null,
+      deleted: false,
+      pending: true,
+      created_at: new Date().toISOString(),
+    };
+    appendRaw(a.key, localMsg);
+    previewDm(a.key, localMsg);
+    try {
+      if (a.kind === 'dm') {
+        await rpcRetry(() =>
+          rpcSendMessage({
+            conversationId: a.key.replace('dm:', ''),
+            senderId: me!.id,
+            ct: ciphertext,
+            iv,
+            type: 'text',
+            replyTo,
+            id: localId,
+          }),
+        );
+      } else {
+        await rpcRetry(() =>
+          rpcGroupSend({
+            groupId: a.key.replace('grp:', ''),
+            senderId: me!.id,
+            ct: ciphertext,
+            iv,
+            type: 'text',
+            replyTo,
+            id: localId,
+          }),
+        );
+      }
+      refetchActive();
+    } catch (e) {
+      patchLocalMsg(a.key, localId, { pending: false, failed: true });
+      appNotify('GAGAL KIRIM', toastErr(e), { icon: '⚠️' });
+    }
+  }
+
+  async function sendMedia(file: File, replyTo?: string | null) {
+    const a = activeRef.current;
+    if (!a) return;
+    const MAX_SIZE = 200 * 1024 * 1024;
+    if (file.size > MAX_SIZE) {
+      appNotify('FILE TERLALU BESAR', 'Maksimal 200 MB per kirim.', { icon: '⚠️' });
+      return;
+    }
+    const k = keyMapRef.current[a.key];
+    if (!k) return;
+    const type = file.type.startsWith('video/')
+      ? 'video'
+      : file.type === 'image/gif'
+        ? 'gif'
+        : file.type.startsWith('audio/')
+          ? 'voice'
+          : 'image';
+    try {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const buf = await file.arrayBuffer();
+      const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, k, buf);
+      const path = `${a.kind === 'dm' ? 'dm' : 'grp'}/${crypto.randomUUID()}`;
+      await uploadMedia('chat-media', path, new Blob([encrypted], { type: file.type }));
+      const ivB64 = bufToB64(iv);
+      const ctB64 = bufToB64(encrypted);
+      const localId = crypto.randomUUID();
+      const localMsg: Msg = {
+        id: localId,
+        conversation_id: a.kind === 'dm' ? a.key.replace('dm:', '') : undefined,
+        group_id: a.kind === 'group' ? a.key.replace('grp:', '') : undefined,
+        sender_id: me!.id,
+        username: me!.username,
+        ciphertext: ctB64,
+        iv: ivB64,
+        msg_type: type,
+        media_path: path,
+        reply_to: replyTo ?? null,
+        deleted: false,
+        pending: true,
+        created_at: new Date().toISOString(),
+      };
+      appendRaw(a.key, localMsg);
+      try {
+        if (a.kind === 'dm') {
+          await rpcRetry(() =>
+            rpcSendMessage({
+              conversationId: a.key.replace('dm:', ''),
+              senderId: me!.id,
+              ct: ctB64,
+              iv: ivB64,
+              type,
+              path,
+              replyTo,
+              id: localId,
+            }),
+          );
+        } else {
+          await rpcRetry(() =>
+            rpcGroupSend({
+              groupId: a.key.replace('grp:', ''),
+              senderId: me!.id,
+              ct: ctB64,
+              iv: ivB64,
+              type,
+              path,
+              replyTo,
+              id: localId,
+            }),
+          );
+        }
+        refetchActive();
+      } catch (e) {
+        patchLocalMsg(a.key, localId, { pending: false, failed: true });
+        appNotify('GAGAL KIRIM MEDIA', toastErr(e), { icon: '⚠️' });
+      }
+    } catch (e) {
+      appNotify('GAGAL MEDIA', toastErr(e), { icon: '⚠️' });
+    }
+  }
+
+  // ---------- REACT / EDIT / DELETE ----------
+  async function toggleReact(msgId: string, emoji: string) {
+    const a = activeRef.current;
+    if (!a || !me) return;
+    const mine = (reactMap[msgId] ?? []).find((r) => r.user_id === me.id && r.emoji === emoji);
+    try {
+      if (a.kind === 'dm') {
+        if (mine) await rpcRemoveReaction(msgId, me.id, emoji);
+        else await rpcAddReaction(msgId, me.id, emoji);
+      } else {
+        if (mine) await rpcGroupRemoveReaction(msgId, me.id, emoji);
+        else await rpcGroupAddReaction(msgId, me.id, emoji);
+      }
+    } catch {
+      /* noop */
+    }
+  }
+
+  async function editMsg(msgId: string, newText: string) {
+    const a = activeRef.current;
+    if (!a) return;
+    const k = keyMapRef.current[a.key];
+    if (!k) return;
+    try {
+      const { ciphertext, iv } = await encryptText(k, newText);
+      if (a.kind === 'dm') await rpcEditMessage(msgId, me!.id, ciphertext, iv);
+      else await rpcGroupEditMessage(msgId, me!.id, ciphertext, iv);
+      evictCache(msgId);
+      refetchActive();
+    } catch (e) {
+      appNotify('GAGAL EDIT', toastErr(e), { icon: '⚠️' });
+    }
+  }
+
+  async function delMsg(msgId: string) {
+    const a = activeRef.current;
+    if (!a || !me) return;
+    try {
+      if (a.kind === 'dm') await rpcDeleteMessage(msgId, me.id);
+      else await rpcGroupDeleteMessage(msgId, me.id);
+      evictCache(msgId);
+      refetchActive();
+    } catch (e) {
+      appNotify('GAGAL HAPUS', toastErr(e), { icon: '⚠️' });
+    }
+  }
+
+  // ---------- NEW CHAT / GROUP ----------
+  async function startDm(u: User) {
+    setModal(null);
+    if (!me) return;
+    const id = await rpcGetOrCreateConversation(me.id, u.id).catch((e) => {
+      appNotify('GAGAL', toastErr(e), { icon: '⚠️' });
+      return null;
+    });
+    if (!id) return;
+    const item: ConversationItem = {
+      key: DMK(id),
+      kind: 'dm',
+      id: id,
+      peerId: u.id,
+      name: u.username,
+      public_key: u.public_key ?? undefined,
+      online: !!onlineSet[u.id],
+    };
+    setDms((d) => [item, ...d.filter((x) => x.key !== item.key)]);
+    openDm(item);
+  }
+
+  async function createGroup(name: string, memberIds: string[]) {
+    setModal(null);
+    if (!me || !privateKey) return;
+    try {
+      const gid = await rpcGroupCreate(name, me.id, [me.id, ...memberIds]);
+      const groupKey = await randomAESKey();
+      const rawKey = await exportAESKey(groupKey);
+      const all = [me, ...users.filter((u) => memberIds.includes(u.id))];
+      await Promise.all(
+        all.map(async (u) => {
+          if (!u.public_key) return;
+          const { ciphertext, iv } = await encryptToRecipient(privateKey, u.public_key, rawKey);
+          await rpcSaveGroupKey(gid, u.id, ciphertext, iv);
+        }),
+      );
+      keyMapRef.current[GRK(gid)] = groupKey;
+      setKeyMap({ ...keyMapRef.current });
+      const g: Group = { id: gid, name, created_by: me.id, created_at: new Date().toISOString() };
+      setGroups((gs) => [g, ...gs]);
+      openGroup({ key: GRK(gid), kind: 'group', name });
+    } catch (e) {
+      appNotify('GAGAL BUAT GRUP', toastErr(e), { icon: '⚠️' });
+    }
+  }
+
+  async function addMember(gid: string, uid: string) {
+    const key = GRK(gid);
+    const k = keyMapRef.current[key];
+    if (!me || !privateKey || !k) return;
+    try {
+      await rpcGroupAddMember(gid, uid);
+      const u = users.find((x) => x.id === uid);
+      if (u?.public_key) {
+        const raw = await exportAESKey(k);
+        const { ciphertext, iv } = await encryptToRecipient(privateKey, u.public_key, raw);
+        await rpcSaveGroupKey(gid, uid, ciphertext, iv);
+      }
+      const members = await rpcGroupMembers(gid);
+      setGroupMembers((m) => ({ ...m, [gid]: members }));
+      appNotify('MEMBER DITAMBAH', `${u?.username ?? uid} masuk grup, kunci E2E dibagikan.`, { icon: '🔑' });
+    } catch (e) {
+      appNotify('GAGAL', toastErr(e), { icon: '⚠️' });
+    }
+  }
+
+  // ---------- CALL ----------
+  function startCall() {
+    if (!active || !me || active.kind !== 'dm') return;
+    const item = dms.find((d) => d.key === active.key);
+    if (!item?.peerId) return;
+    const peer = users.find((u) => u.id === item.peerId) ?? { id: item.peerId, username: item.name };
+    setCall({ mode: 'caller', peer });
+    inCallRef.current = true;
+  }
+
+  function acceptCall() {
+    if (!incoming) return;
+    setCall({ mode: 'callee', peer: incoming });
+    inCallRef.current = true;
+    setIncoming(null);
+  }
+  function declineCall() {
+    if (incoming) {
+      import('../../lib/realtime').then(({ sendCall }) =>
+        sendCall({ event: 'call-cancel', data: { from: me!.id, to: incoming.id } }),
+      );
+    }
+    setIncoming(null);
+  }
+
+  function logout() {
+    if (me) rpcLogAccess(me.id, 'logout').catch(() => {});
+    stopPresence();
+    clearCache();
+    clearSession();
+    setSession(null, null);
+    setView('landing');
+  }
+
+  // ---------- DERIVED ----------
+  const allItems = useMemo(() => {
+    const d = dms.map((it) => ({
+      ...it,
+      online: !!onlineSet[it.peerId ?? ''],
+      lastMsg: it.lastMsg,
+      unread: unread[it.key] ?? 0,
+    }));
+    const g = groups.map((gr) => ({
+      key: GRK(gr.id),
+      kind: 'group' as const,
+      name: gr.name,
+      lastMsg: undefined,
+      unread: unread[GRK(gr.id)] ?? 0,
+    }));
+    return [...d, ...g];
+  }, [dms, groups, onlineSet, unread]);
+
+  const activeMsgs = active ? msgMap[active.key] ?? [] : [];
+  const activeKeyObj = active ? keyMap[active.key] : undefined;
+  const activePeer = active?.kind === 'dm' ? dms.find((d) => d.key === active.key) : undefined;
+  const groupLocked = active?.kind === 'group' ? !keyMap[active.key] : false;
+  const activeTyper = active ? typing[active.key] ?? [] : [];
+  const totalUnread = Object.values(unread).reduce((a, b) => a + b, 0);
+  const userNames = useMemo(() => {
+    const m: Record<string, string> = {};
+    users.forEach((u) => (m[u.id] = u.username));
+    return m;
+  }, [users]);
+
+  return (
+    <div className="relative h-screen w-full flex flex-col bg-abyss scanlines overflow-hidden" style={{ height: '100dvh' }}>
+      <CyberBg />
+
+      {/* TOP BAR */}
+      <header className="relative z-20 flex items-center gap-2 px-3 sm:px-5 py-3 border-b border-white/10 bg-panel/80 backdrop-blur-xl">
+        <div className="flex items-center gap-2 font-mono mr-auto">
+          <span className="w-2.5 h-2.5 rounded-full bg-neon animate-pulseglow" />
+          <span className="text-neon font-bold tracking-widest hidden sm:inline">NEXUS</span>
+          <span className="text-slate-500 text-[10px] hidden md:inline">E2E // {me?.username}</span>
+        </div>
+
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          <button
+            onClick={() => setModal('ghost')}
+            className={`p-2 rounded-lg border transition-colors ${ghostMode ? 'text-neon border-neon/60 bg-neon/10 animate-pulse' : 'text-slate-400 border-white/10 hover:text-neon'}`}
+            title="Ghost mode"
+          >
+            <Ghost size={17} />
+          </button>
+          <button
+            onClick={async () => {
+              const ok = await requestNotifPermission();
+              appNotify(ok ? 'NOTIFIKASI AKTIF' : 'IZIN DITOLAK', ok ? 'Push notification aktif.' : 'Nyalakan dari pengaturan browser.', { icon: ok ? '🔔' : '🚫' });
+            }}
+            className="relative p-2 rounded-lg text-slate-400 hover:text-neon border border-white/10"
+            title="Notifikasi"
+          >
+            <Bell size={17} />
+            {totalUnread > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-0.5 rounded-full bg-virus text-white text-[9px] font-mono flex items-center justify-center">
+                {totalUnread}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={logout}
+            className="p-2 rounded-lg text-slate-400 hover:text-virus border border-white/10"
+            title="Keluar"
+          >
+            <LogOut size={17} />
+          </button>
+        </div>
+      </header>
+
+      {/* NAV TABS */}
+      <div className="relative z-20 flex border-b border-white/10 bg-black/30">
+        {[
+          { id: 'chats', label: 'CHATS', icon: MessageSquare },
+          { id: 'reels', label: 'REELS', icon: Music },
+          { id: 'watch', label: 'NOBAR', icon: MonitorPlay },
+        ].map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id as any)}
+            className={`flex-1 flex items-center justify-center gap-2 py-2.5 font-mono text-xs tracking-widest border-b-2 transition-colors ${
+              tab === t.id ? 'border-neon text-neon bg-neon/5' : 'border-transparent text-slate-500 hover:text-white'
+            }`}
+          >
+            <t.icon size={14} /> {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* MAIN */}
+      <div className="relative z-10 flex-1 flex min-h-0">
+        {/* SIDEBAR */}
+        <aside
+          className={`${tab === 'chats' ? (active ? 'hidden lg:flex' : 'flex') : 'hidden'} w-full lg:w-[360px] flex-col border-r border-white/10 bg-panel/50 min-h-0`}
+        >
+          <div className="border-b border-white/10">
+            <Stories />
+          </div>
+          <ConversationList
+            items={allItems}
+            activeKey={active?.key ?? null}
+            onSelect={(it) => (it.kind === 'dm' ? openDm(it) : openGroup(it))}
+            onNewChat={() => setModal('newchat')}
+            onNewGroup={() => setModal('newgroup')}
+            ghostOn={ghostMode}
+          />
+        </aside>
+
+        {/* CONVERSATION */}
+        <main className={`flex-1 min-h-0 ${tab === 'chats' ? (active ? 'flex' : 'hidden lg:flex') : 'hidden'}`}>
+          {active && activeKeyObj ? (
+            <Conversation
+              kind={active.kind}
+              title={activePeer?.name ?? groups.find((g) => GRK(g.id) === active.key)?.name ?? ''}
+              convKey={active.key}
+              peerId={activePeer?.peerId}
+              online={activePeer?.peerId ? !!onlineSet[activePeer.peerId] : undefined}
+              messages={activeMsgs}
+              keyObj={activeKeyObj}
+              reactions={reactMap}
+              typing={activeTyper}
+              ghostOn={ghostMode}
+              onSendText={sendText}
+              onSendMedia={sendMedia}
+              onReact={toggleReact}
+              onEdit={editMsg}
+              onDelete={delMsg}
+              onRetry={resendMsg}
+              onOpenCall={active.kind === 'dm' ? startCall : undefined}
+              onAddMember={active.kind === 'group' ? () => setAddMemberFor(active.key.replace('grp:', '')) : undefined}
+              groupLocked={active.kind === 'group' ? groupLocked : false}
+              userNames={userNames}
+              onBack={() => setActive(null)}
+            />
+          ) : (
+            <div className="flex-1 flex flex-col items-center justify-center text-slate-600">
+              <div className="text-5xl mb-4 neon-text">◆</div>
+              <div className="font-mono text-sm">Pilih percakapan</div>
+              <div className="font-mono text-xs text-slate-600 mt-2">semua kanal terenkripsi end-to-end</div>
+            </div>
+          )}
+        </main>
+
+        {/* REELS / NOBAR TABS */}
+        <div className={`flex-1 min-h-0 ${tab === 'reels' ? 'flex lg:flex' : 'hidden'}`}>
+          <Reels />
+        </div>
+        <div className={`flex-1 min-h-0 ${tab === 'watch' ? 'flex lg:flex' : 'hidden'}`}>
+          <WatchParty />
+        </div>
+      </div>
+
+      {/* MODALS */}
+      <AnimatePresence>
+        {modal === 'newchat' && (
+          <NewChatModal users={users} meId={me!.id} onPick={startDm} onClose={() => setModal(null)} />
+        )}
+        {modal === 'newgroup' && (
+          <NewGroupModal users={users} meId={me!.id} onCreate={createGroup} onClose={() => setModal(null)} />
+        )}
+        {modal === 'ghost' && <GhostSettingsModal onClose={() => setModal(null)} />}
+      </AnimatePresence>
+
+      {addMemberFor && (
+        <AddMemberModal
+          users={users}
+          meId={me!.id}
+          existing={(groupMembers[addMemberFor] ?? []).map((m) => m.id)}
+          onAdd={(uid) => addMember(addMemberFor, uid)}
+          onClose={() => setAddMemberFor(null)}
+        />
+      )}
+
+      {incoming && <IncomingCallOverlay peer={incoming} onAccept={acceptCall} onDecline={declineCall} />}
+
+      {call && (
+        <VideoCall mode={call.mode} peer={call.peer} onClose={() => { setCall(null); inCallRef.current = false; }} />
+      )}
+    </div>
+  );
+}
