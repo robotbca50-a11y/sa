@@ -1,5 +1,3 @@
-// Deklarasi minimal untuk editor (VS Code TS server) supaya file Deno
-// Edge Function tidak merah. Saat deploy, Supabase pakai runtime Deno asli.
 declare namespace Deno {
   namespace env {
     function get(key: string): string | undefined;
