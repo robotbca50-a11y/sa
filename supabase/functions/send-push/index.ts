@@ -45,10 +45,10 @@ Deno.serve(async (req) => {
     if (subscription?.endpoint) {
       targets.push(subscription);
     } else if (user_id) {
-      const { data, error } = await supabase
-        .from('push_subscriptions')
-        .select('subscription')
-        .eq('user_id', user_id);
+      // Akses via RPC security-definer, bukan query langsung — tabel di-lock RLS.
+      const { data, error } = await supabase.rpc('get_push_subscriptions', {
+        p_user_id: user_id,
+      });
       if (error) return fail(String(error.message), 502);
       for (const row of data ?? []) {
         if (row?.subscription?.endpoint) targets.push(row.subscription);

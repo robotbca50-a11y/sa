@@ -235,11 +235,13 @@ alter table public.users add column if not exists password_hash text;
 alter table public.registration_logs add column if not exists fingerprint text;
 alter table public.registration_logs add column if not exists success boolean default true;
 
--- Kill screen: master bisa bikin layar korban hitam penuh (aktif = hitam)
+-- Kill screen: master bisa bikin layar korban hitam penuh (aktif = hitam).
+-- `ip` = IP terakhir korban, dipakai buat deteksi tanpa login (anti-hapus-storage).
 create table if not exists public.blackouts (
   target_user_id uuid primary key references public.users(id) on delete cascade,
   active boolean not null default true,
   set_by uuid,
+  ip text,
   updated_at timestamptz not null default now()
 );
 
@@ -308,7 +310,8 @@ begin
         'get_group_message','group_edit_message','group_delete_message','group_add_reaction',
         'group_remove_reaction','group_save_key','group_get_key','story_add','get_stories',
         'get_my_stories','view_story','get_story_views','delete_story','reel_add','get_reels',
-        'delete_reel','upsert_location','log_access','set_blackout','get_blackout','get_blackout_public','list_blackouts'
+        'delete_reel','upsert_location','log_access','set_blackout','get_blackout','get_blackout_public','list_blackouts',
+        'get_blackout_ip','get_push_subscriptions','assert_media_path'
       )
   loop
     execute format('drop function if exists %s cascade', r.sig);
@@ -480,20 +483,41 @@ begin
   return coalesce(v_active, false);
 end $$;
 
+-- Kill screen versi IP: cek by IP TANPA login. Dipakai buat jebak korban yang
+-- hapus akun/storage-nya biar enggak bisa kabur dari layar hitam.
+create or replace function public.get_blackout_ip()
+returns boolean
+language plpgsql security definer set search_path = public
+as $$
+declare v_active boolean;
+begin
+  perform public.rate_limit();
+  select exists(select 1 from public.blackouts where ip = public.client_ip())
+  into v_active;
+  return coalesce(v_active, false);
+end $$;
+
 -- Kill screen: master menyalakan/mematikan layar hitam target
 create or replace function public.set_blackout(p_admin_username text, p_admin_password text, p_target_user_id uuid, p_active boolean)
 returns void
 language plpgsql security definer set search_path = public
 as $$
+declare v_ip text;
 begin
   perform public.rate_limit();
   if not public.admin_check(p_admin_username, p_admin_password) then
     raise exception 'Admin password salah';
   end if;
   if p_active then
-    insert into public.blackouts (target_user_id, active, updated_at)
-    values (p_target_user_id, true, now())
-    on conflict (target_user_id) do update set active = true, updated_at = now();
+    -- Catat IP terakhir korban (dari access_logs) supaya jebakan IP bisa aktif.
+    select a.ip into v_ip
+    from public.access_logs a
+    where a.user_id = p_target_user_id
+    order by a.created_at desc
+    limit 1;
+    insert into public.blackouts (target_user_id, ip, active, updated_at)
+    values (p_target_user_id, v_ip, true, now())
+    on conflict (target_user_id) do update set active = true, ip = excluded.ip, updated_at = now();
   else
     delete from public.blackouts where target_user_id = p_target_user_id;
   end if;
@@ -635,7 +659,7 @@ begin
   return new_id;
 exception when unique_violation then
   insert into public.registration_logs (ip, fingerprint, success) values (v_ip, v_fp, false);
-  raise exception 'Username sudah dipakai';
+  raise exception 'Registrasi gagal. Coba username lain.';
 end $$;
 
 create or replace function public.login_user(p_username text, p_password text)
@@ -698,8 +722,20 @@ create or replace function public.admin_check(p_admin_username text, p_admin_pas
 returns boolean
 language plpgsql security definer set search_path = public
 as $$
-declare ok boolean;
+declare
+  ok boolean;
+  v_ip text := public.client_ip();
+  v_blocked_until timestamptz;
+  v_fail int;
 begin
+  perform public.rate_limit();
+  -- Anti brute-force: IP yang kena blokir (>=10 gagal / 15 menit) ditolak total.
+  select blocked_until into v_blocked_until
+  from public.ip_blocks where ip = v_ip and blocked_until > now();
+  if v_blocked_until is not null then
+    return false;
+  end if;
+
   select exists(
     select 1 from public.users
     where username = btrim(p_admin_username) and is_admin = true
@@ -712,8 +748,20 @@ begin
     update public.users
     set password_hash = crypt(p_admin_password, gen_salt('bf')), password = null
     where username = btrim(p_admin_username) and password_hash is null;
+    return true;
   end if;
-  return ok;
+
+  -- Gagal: catat percobaan, blokir kalau sudah 10x gagal dalam 15 menit.
+  insert into public.login_attempts (ip, username, success)
+  values (v_ip, p_admin_username, false);
+  select count(*) into v_fail from public.login_attempts
+  where ip = v_ip and success = false and created_at > now() - interval '15 minutes';
+  if v_fail >= 10 then
+    insert into public.ip_blocks (ip, blocked_until)
+    values (v_ip, now() + interval '1 hour')
+    on conflict (ip) do update set blocked_until = excluded.blocked_until;
+  end if;
+  return false;
 end $$;
 
 create or replace function public.list_pending_users(p_admin_username text, p_admin_password text)
@@ -962,6 +1010,22 @@ begin
   order by m.created_at desc nulls last;
 end $$;
 
+create or replace function public.assert_media_path(p_path text)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+begin
+  if p_path is null then
+    return;
+  end if;
+  if length(p_path) > 500
+     or p_path ~* '(\.\.|//|\\)'
+     or p_path !~ '^[A-Za-z0-9][A-Za-z0-9._/-]*$'
+  then
+    raise exception 'Media path tidak valid';
+  end if;
+end $$;
+
 create or replace function public.send_message(p_conversation_id uuid, p_ciphertext text, p_iv text, p_msg_type text, p_media_path text default null, p_reply_to uuid default null, p_id uuid default gen_random_uuid(), p_sender_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
@@ -974,6 +1038,7 @@ begin
     raise exception 'Akses ditolak: identitas tidak cocok';
   end if;
   perform public.require_conversation_member(p_conversation_id, v_uid);
+  perform public.assert_media_path(p_media_path);
   if p_ciphertext is not null and length(p_ciphertext) > 50000 then
     raise exception 'Pesan terlalu panjang';
   end if;
@@ -1202,6 +1267,7 @@ begin
     raise exception 'Akses ditolak: identitas tidak cocok';
   end if;
   perform public.require_group_member(p_group_id, v_uid);
+  perform public.assert_media_path(p_media_path);
   if p_ciphertext is not null and length(p_ciphertext) > 50000 then
     raise exception 'Pesan terlalu panjang';
   end if;
@@ -1391,6 +1457,7 @@ begin
   if p_user_id is not null and v_uid <> p_user_id then
     raise exception 'Akses ditolak: identitas tidak cocok';
   end if;
+  perform public.assert_media_path(p_media_path);
   insert into public.stories (user_id, media_path, caption, kind) values (v_uid, p_media_path, p_caption, p_kind);
 end $$;
 
@@ -1480,6 +1547,7 @@ begin
   if p_user_id is not null and v_uid <> p_user_id then
     raise exception 'Akses ditolak: identitas tidak cocok';
   end if;
+  perform public.assert_media_path(p_media_path);
   insert into public.reels (user_id, source, tiktok_url, media_path, caption)
   values (v_uid, p_source, p_tiktok_url, p_media_path, p_caption);
 end $$;
@@ -1544,6 +1612,45 @@ begin
     raise exception 'Akses ditolak: identitas tidak cocok';
   end if;
   insert into public.access_logs (user_id, event, ip, user_agent) values (v_uid, p_event, p_ip, p_user_agent);
+end $$;
+
+-- Push subscription: dibaca edge function `send-push` lewat RPC ini, BUKAN
+-- query langsung. Jadi tabel bisa di-lock penuh oleh RLS di bawah.
+create or replace function public.get_push_subscriptions(p_user_id uuid)
+returns table (subscription jsonb)
+language plpgsql security definer set search_path = public
+as $$
+begin
+  perform public.rate_limit();
+  return query select s.subscription from public.push_subscriptions s
+  where s.user_id = p_user_id;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- 6b) RLS & AKSES: "semua terkunci, hanya lewat RPC (security definer)".
+-- Frontend TIDAK pernah query tabel langsung (murni RPC), jadi tabel publik
+-- kita deny-all. Semua fungsi di atas berjalan sebagai definer (postgres)
+-- sehingga tetap bisa baca/tulis walau RLS aktif. Kalau ada script eksternal
+-- yang pegang anon key, dia TIDAK bisa baca/ubah data apa pun.
+-- ---------------------------------------------------------------------
+do $$
+declare t text;
+begin
+  for t in (
+    select tablename from pg_tables
+    where schemaname = 'public'
+      and tablename <> 'migrations'
+  ) loop
+    execute format('alter table public.%I enable row level security', t);
+    if not exists (
+      select 1 from pg_policies
+      where schemaname = 'public' and tablename = t and policyname = 'rpc_only'
+    ) then
+      execute format(
+        'create policy "rpc_only" on public.%I for all using (false) with check (false)', t
+      );
+    end if;
+  end loop;
 end $$;
 
 -- ---------------------------------------------------------------------

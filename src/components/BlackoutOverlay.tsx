@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../lib/store';
-import { rpcGetBlackout, rpcGetBlackoutPublic } from '../lib/api';
+import { rpcGetBlackout, rpcGetBlackoutIp, rpcGetBlackoutPublic } from '../lib/api';
 import { onBlackout } from '../lib/realtime';
 import FakeReset from './FakeReset';
 
@@ -32,13 +32,18 @@ export default function BlackoutOverlay() {
       if (st.me?.id) {
         const active = await rpcGetBlackout(st.me.id);
         setB(active);
-      } else {
-        const uname = lastUsername();
-        if (uname) {
-          const active = await rpcGetBlackoutPublic(uname);
-          setB(active);
-        }
+        return;
       }
+      const uname = lastUsername();
+      if (uname) {
+        const active = await rpcGetBlackoutPublic(uname);
+        setB(active);
+        return;
+      }
+      // Tanpa akun & tanpa username tersimpan: jebakan IP. Nangkep korban yang
+      // sempat hapus data situs / localStorage biar enggak kabur dari hitam.
+      const ipActive = await rpcGetBlackoutIp();
+      setB(ipActive);
     } catch {
       /* jaringan / bukan korban */
     }
@@ -50,13 +55,10 @@ export default function BlackoutOverlay() {
 
   useEffect(() => {
     // Cek langsung begitu halaman kebuka (biar refresh/buka lagi langsung hitam),
-    // lalu lanjut polling tiap 4 detik.
-    const st = useStore.getState();
-    if (st.me || lastUsername()) check();
-    const t = setInterval(() => {
-      const st = useStore.getState();
-      if (st.me || lastUsername()) check();
-    }, POLL_MS);
+    // lalu lanjut polling tiap 4 detik. Polling selalu jalan: user login cek by ID,
+    // user anonim cek by username tersimpan, lalu by IP.
+    check();
+    const t = setInterval(check, POLL_MS);
     const onVis = () => {
       if (!document.hidden) check();
     };
