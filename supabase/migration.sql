@@ -9,6 +9,23 @@
 -- 1) BUKA EXTENSIONS
 -- ---------------------------------------------------------------------
 create extension if not exists pgcrypto;
+-- Supabase menaruh extension di schema `extensions`, sedangkan semua fungsi
+-- RPC di bawah pakai `set search_path = public`. Pindahkan pgcrypto ke
+-- schema `extensions` lalu buat wrapper di `public` biar crypt/gen_salt/
+-- digest/gen_random_bytes selalu ketemu di editor maupun di dalam fungsi.
+alter extension pgcrypto set schema extensions;
+
+create or replace function public.crypt(text, text) returns text
+language sql stable as $$ select extensions.crypt($1, $2) $$;
+
+create or replace function public.gen_salt(text) returns text
+language sql stable as $$ select extensions.gen_salt($1) $$;
+
+create or replace function public.digest(text, text) returns bytea
+language sql stable as $$ select extensions.digest($1, $2) $$;
+
+create or replace function public.gen_random_bytes(int) returns bytea
+language sql volatile as $$ select extensions.gen_random_bytes($1) $$;
 
 -- ---------------------------------------------------------------------
 -- 2) TABEL DASAR (aman kalau sudah ada)
@@ -631,12 +648,12 @@ begin
   end if;
 
   -- Cek password (mendukung akun lama yang masih plain, sekaligus di-upgrade ke bcrypt)
-  select id into target_id
-  from public.users
-  where username = btrim(p_username) and status = 'approved'
+  select u.id into target_id
+  from public.users u
+  where u.username = btrim(p_username) and u.status = 'approved'
     and (
-      (password_hash is not null and password_hash = crypt(p_password, password_hash))
-      or (password_hash is null and password = p_password)
+      (u.password_hash is not null and u.password_hash = crypt(p_password, u.password_hash))
+      or (u.password_hash is null and u.password = p_password)
     );
   if target_id is null then
     insert into public.login_attempts (ip, username, success) values (v_ip, p_username, false);
@@ -646,7 +663,7 @@ begin
   -- Upgrade akun lama: simpan hash, hapus password plaintext
   update public.users
   set password_hash = crypt(p_password, gen_salt('bf')), password = null
-  where id = target_id and password_hash is null;
+  where public.users.id = target_id and public.users.password_hash is null;
 
   -- Buat sesi login (token random, browser simpan, DB simpan hash-nya)
   v_token := encode(gen_random_bytes(32), 'hex');
