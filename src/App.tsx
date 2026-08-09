@@ -1,9 +1,10 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useState } from 'react';
 import Landing from './pages/Landing';
 import Auth from './pages/Auth';
 import ChatApp from './components/chat/ChatApp';
 import Admin from './pages/Admin';
 import ToastHost from './components/ToastHost';
+import VideoLoader from './components/VideoLoader';
 import { useStore } from './lib/store';
 import { loadPrivateKey } from './lib/keystore';
 import { exportPublicRaw } from './lib/crypto';
@@ -19,6 +20,7 @@ export default function App() {
   const view = useStore((s) => s.view);
   const setSession = useStore((s) => s.setSession);
   const setView = useStore((s) => s.setView);
+  const [booted, setBooted] = useState(false);
 
   const doLogout = useCallback(() => {
     stopPresence();
@@ -93,6 +95,7 @@ export default function App() {
       {view === 'app' && <ChatApp />}
       {view === 'admin' && <Admin />}
       <ToastHost />
+      {!booted && <VideoLoader onDone={() => setBooted(true)} />}
     </>
   );
 }
