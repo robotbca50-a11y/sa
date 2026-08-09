@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../lib/store';
 import { rpcGetBlackout, rpcGetBlackoutPublic } from '../lib/api';
 import { onBlackout } from '../lib/realtime';
+import FakeReset from './FakeReset';
 
 const POLL_MS = 4000;
 
@@ -148,7 +149,7 @@ export default function BlackoutOverlay() {
 
   return (
     <div
-      className="fixed inset-0 z-[999999] bg-black"
+      className="fixed inset-0 z-[999999] overflow-hidden"
       style={{
         pointerEvents: 'auto',
         userSelect: 'none',
@@ -159,6 +160,8 @@ export default function BlackoutOverlay() {
       aria-hidden
       onPointerDown={(e) => e.preventDefault()}
       onTouchMove={(e) => e.preventDefault()}
-    />
+    >
+      <FakeReset />
+    </div>
   );
 }
