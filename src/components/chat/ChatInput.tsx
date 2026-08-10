@@ -127,7 +127,7 @@ export default function ChatInput({
   }
 
   return (
-    <div className="pb-safe relative border-t border-white/10 bg-panel/70 backdrop-blur-xl px-3 pt-2.5">
+    <div className="pb-safe relative border-t border-white/10 bg-panel/70 backdrop-blur-xl px-3 pt-2.5 w-full max-w-full min-w-0 overflow-hidden">
       {replyingTo && (
         <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-lg bg-neon/10 border border-neon/30">
           <div className="min-w-0 flex-1">

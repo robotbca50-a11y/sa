@@ -180,7 +180,7 @@ function StoryViewer({
       className="fixed inset-0 z-[80] bg-black/95 flex items-center justify-center"
       onClick={onClose}
     >
-      <div className="relative w-full max-w-md h-full max-h-[92vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+      <div className="relative w-full max-w-md h-full max-h-[92vh] flex flex-col overflow-x-hidden" onClick={(e) => e.stopPropagation()}>
         <div className="flex gap-1 p-3 pt-4">
           {list.map((_, i) => (
             <div key={i} className="flex-1 h-1 rounded-full bg-white/20 overflow-hidden">

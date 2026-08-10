@@ -57,7 +57,7 @@ export default function Landing() {
   const opacity = useTransform(scrollYProgress, [0, 0.7], [1, 0]);
 
   return (
-    <div className="relative min-h-dvh overflow-hidden scanlines">
+    <div className="relative min-h-dvh overflow-hidden scanlines w-full" style={{ width: '100vw', maxWidth: '100%' }}>
       <CyberCanvas />
       <div className="grid-floor absolute inset-0 z-0" />
 

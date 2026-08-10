@@ -1068,11 +1068,11 @@ export default function ChatApp() {
   }, [users]);
 
   return (
-    <div className="relative w-full flex flex-col bg-abyss scanlines overflow-hidden" style={{ height: '100dvh' }}>
+    <div className="relative w-full flex flex-col bg-abyss scanlines overflow-hidden" style={{ height: '100dvh', width: '100vw', maxWidth: '100%' }}>
       <CyberBg />
 
       {/* TOP BAR */}
-      <header className="pt-safe-2 relative z-20 flex items-center gap-2 px-3 sm:px-5 pb-3 border-b border-white/10 bg-panel/80 backdrop-blur-xl">
+      <header className="pt-safe-2 relative z-20 flex items-center gap-2 px-3 sm:px-5 pb-3 border-b border-white/10 bg-panel/80 backdrop-blur-xl w-full max-w-full min-w-0">
         <div className="flex items-center gap-2 font-mono mr-auto">
           <span className="w-2.5 h-2.5 rounded-full bg-neon animate-pulseglow" />
           <span className="text-neon font-bold tracking-widest hidden sm:inline">NEXUS</span>
