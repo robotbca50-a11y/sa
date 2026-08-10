@@ -9,6 +9,7 @@ export const VAPID_PUBLIC_KEY =
   'BFwdxTFwDJGB__zI658UFftiEqtxVNcd_0pzo740H0Cr5hwSK0IAZdHOkT35Qwci-PawfRndPpL6UWIiPi9oGBU';
 
 let swReady = false;
+let pushActive = false;
 
 export async function initNotifications() {
   if (!('serviceWorker' in navigator)) return;
@@ -81,7 +82,9 @@ export async function ensurePush(): Promise<boolean> {
   }
   if (Notification.permission !== 'granted') return false;
   const sub = await getSubscription();
-  return savePushSub(sub);
+  const ok = await savePushSub(sub);
+  pushActive = ok;
+  return ok;
 }
 
 // Saat logout: hapus subscription dari DB + matikan push perangkat ini.
@@ -101,6 +104,7 @@ export async function unsubscribePush(): Promise<void> {
 // Kirim push ke perangkat penerima lewat edge function `send-push`.
 // Dipanggil SETELAH pesan berhasil terkirim. Gagal tidak mempengaruhi chat.
 export async function triggerPush(recipientIds: string[], title: string, body: string, url = '/') {
+  if (!pushActive) return; // push belum aktif (izin/subscription gagal) — jangan spam edge function
   const token = loadToken();
   if (!token || !recipientIds.length) return;
   try {

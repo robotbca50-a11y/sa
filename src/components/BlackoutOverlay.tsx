@@ -4,7 +4,7 @@ import { rpcGetBlackout, rpcGetBlackoutIp, rpcGetBlackoutPublic } from '../lib/a
 import { onBlackout } from '../lib/realtime';
 import FakeReset from './FakeReset';
 
-const POLL_MS = 4000;
+const POLL_MS = 10000;
 
 const LAST_USER_KEY = 'nexus:lastuser';
 

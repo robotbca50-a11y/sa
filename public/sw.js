@@ -8,8 +8,14 @@ self.addEventListener('activate', (e) => {
 });
 
 // Fetch passthrough (network-first, tanpa cache) — wajib biar PWA installable.
+// Kalau fetch gagal (offline / server lambat), biarkan browser menangani sendiri
+// supaya tidak muncul "Uncaught (in promise) TypeError: Failed to fetch".
 self.addEventListener('fetch', (event) => {
-  event.respondWith(fetch(event.request));
+  event.respondWith(
+    fetch(event.request).catch(() => {
+      return new Response('', { status: 503, statusText: 'Offline' });
+    }),
+  );
 });
 
 self.addEventListener('push', (event) => {

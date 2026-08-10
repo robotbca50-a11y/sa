@@ -56,7 +56,7 @@ export function isBrowserRegistered(): boolean {
   }
 }
 
-export async function nxRpc(name: string, args: Record<string, unknown> = {}) {
+export async function nxRpc(name: string, args: Record<string, unknown> = {}, retries = 3) {
   const headers: Record<string, string> = {
     apikey: SUPABASE_ANON_KEY,
     Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
@@ -81,7 +81,14 @@ export async function nxRpc(name: string, args: Record<string, unknown> = {}) {
     }
     if (!res.ok) {
       const bodyErr = (data && typeof data === 'object' && (data as { message?: unknown }).message) || text;
-      return { data: null, error: { message: String(bodyErr || `HTTP ${res.status}`) } };
+      const msg = String(bodyErr || `HTTP ${res.status}`);
+      // Kalau server lagi kena rate-limit (burst sesaat / IP wifi bersama), tunggu
+      // sebentar lalu coba lagi — jangan langsung menyerah & menampilkan error.
+      if (retries > 0 && /terlalu banyak permintaan/i.test(msg)) {
+        await new Promise((r) => setTimeout(r, 600 + Math.random() * 600));
+        return nxRpc(name, args, retries - 1);
+      }
+      return { data: null, error: { message: msg } };
     }
     return { data, error: null };
   } catch (e) {

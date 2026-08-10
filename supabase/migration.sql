@@ -426,7 +426,7 @@ $$;
 -- di belakang NAT/sekawanan wifi berbagi satu kuota dan gampang kena "terlalu
 -- banyak permintaan" saat buka app. User yang sudah login diberi kuota sendiri.
 -- Dipanggil otomatis di awal hampir semua fungsi RPC di bawah.
-create or replace function public.rate_limit(p_max int default 60, p_window int default 1)
+create or replace function public.rate_limit(p_max int default 200, p_window int default 1)
 returns void
 language plpgsql volatile set search_path = public
 as $$
