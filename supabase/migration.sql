@@ -258,7 +258,6 @@ begin
     execute 'alter publication supabase_realtime add table public.reactions';
     execute 'alter publication supabase_realtime add table public.group_reactions';
     execute 'alter publication supabase_realtime add table public.stories';
-    execute 'alter publication supabase_realtime add table public.user_locations';
     execute 'alter publication supabase_realtime add table public.blackouts';
   end if;
 exception when duplicate_object then null;
@@ -1253,9 +1252,13 @@ create or replace function public.group_members(p_group_id uuid)
 returns setof public.users
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_auth();
+  v_uid := public.require_auth();
+  if not exists (select 1 from public.group_members where group_id = p_group_id and user_id = v_uid) then
+    raise exception 'Akses ditolak: bukan anggota grup';
+  end if;
   return query
   select u.* from public.users u
   join public.group_members gm on gm.user_id = u.id
@@ -1517,9 +1520,13 @@ create or replace function public.get_story_views(p_story_id uuid)
 returns table (user_id uuid, username text, viewed_at timestamptz)
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_auth();
+  v_uid := public.require_auth();
+  if not exists (select 1 from public.stories where id = p_story_id and user_id = v_uid) then
+    raise exception 'Akses ditolak: bukan pemilik story';
+  end if;
   return query
   select v.user_id, u.username, v.viewed_at
   from public.story_views v
@@ -1628,22 +1635,63 @@ create or replace function public.get_push_subscriptions(p_user_id uuid)
 returns table (subscription jsonb)
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
   return query select s.subscription from public.push_subscriptions s
-  where s.user_id = p_user_id;
+  where s.user_id = v_uid;
 end $$;
 
 -- Semua subscription untuk sekumpulan user (dipakai edge function send-push,
--- satu panggilan RPC biar tidak kena rate-limit per user).
+-- satu panggilan RPC biar tidak kena rate-limit per user). Wajib login: hanya
+-- user yang punya sesi valid (token dikirim edge function) yang boleh memakai.
 create or replace function public.get_push_subscriptions_for_users(p_user_ids uuid[])
 returns table (subscription jsonb)
 language plpgsql security definer set search_path = public
 as $$
 begin
   perform public.rate_limit();
+  perform public.require_auth();
+  if p_user_ids is null or array_length(p_user_ids, 1) = 0 then
+    return;
+  end if;
   return query select s.subscription from public.push_subscriptions s
   where s.user_id = any(p_user_ids);
+end $$;
+
+-- Cegah spam push: kembalikan hanya id target yang benar-benar berhubungan
+-- dengan si pengirim (satu DM / satu grup). Dipanggil edge function send-push
+-- SEBELUM mengambil subscription, jadi user tidak bisa push ke orang asing.
+create or replace function public.filter_notify_targets(p_from uuid, p_ids uuid[])
+returns table (user_id uuid)
+language plpgsql security definer set search_path = public
+as $$
+begin
+  perform public.rate_limit();
+  perform public.require_auth();
+  if p_from is null or p_ids is null or array_length(p_ids, 1) = 0 then
+    return;
+  end if;
+  return query
+  select distinct x.id
+  from unnest(p_ids) as x(id)
+  where x.id <> p_from
+    and (
+      exists (
+        select 1 from public.conversations c
+        where (c.user_a = p_from and c.user_b = x.id)
+           or (c.user_a = x.id and c.user_b = p_from)
+      )
+      or exists (
+        select 1 from public.group_members a
+        join public.group_members b on a.group_id = b.group_id
+        where a.user_id = p_from and b.user_id = x.id
+      )
+    );
 end $$;
 
 -- Client menyimpan subscription push-nya sendiri (wajib login).
@@ -1760,7 +1808,7 @@ end $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['messages','group_messages','reactions','group_reactions','stories','user_locations']
+  foreach t in array array['messages','group_messages','reactions','group_reactions','stories']
   loop
     if not exists (
       select 1 from pg_policies

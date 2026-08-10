@@ -1,6 +1,6 @@
 import { supabase } from './supabase';
 import { useStore } from './store';
-import type { Msg, Reaction, Story, LocRow } from '../types';
+import type { Msg, Reaction, Story } from '../types';
 import { rpcUpsertLocation } from './api';
 
 let presenceChannel: ReturnType<typeof supabase.channel> | null = null;
@@ -103,21 +103,8 @@ export function subscribeStories(cb: (s: Story, kind: 'INSERT' | 'DELETE') => vo
     .subscribe();
 }
 
-export function subscribeLocations(cb: (l: LocRow) => void) {
-  return supabase
-    .channel('nexus-locations')
-    .on(
-      'postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'user_locations' },
-      (p) => cb(p.new as LocRow),
-    )
-    .on(
-      'postgres_changes',
-      { event: 'UPDATE', schema: 'public', table: 'user_locations' },
-      (p) => cb(p.new as LocRow),
-    )
-    .subscribe();
-}
+// Lokasi: TIDAK dipublish realtime (privasi). Peta admin memakai polling
+// `get_all_locations` (admin-only) supaya koordinat tidak bocor ke anon key.
 
 // ---------- BROADCAST: TYPING / CALL / WATCH ----------
 let liveChannel: ReturnType<typeof supabase.channel> | null = null;

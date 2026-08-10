@@ -8,7 +8,7 @@ import {
   rpcPendingUsers, rpcSetUserStatus, rpcAllLocations, rpcAccessLogs, rpcUserStats,
   rpcAllUsers, rpcDeleteUser, rpcPurgeAllUsers, rpcListBlackouts, rpcSetBlackout,
 } from '../lib/api';
-import { subscribeLocations, sendBlackout } from '../lib/realtime';
+import { sendBlackout } from '../lib/realtime';
 import NeonButton from '../components/NeonButton';
 import CyberCanvas from '../components/CyberCanvas';
 import type { AccessLog, LocRow, User } from '../types';
@@ -125,13 +125,7 @@ export default function Admin() {
   useEffect(() => {
     if (!logged) return;
     refreshAll();
-    const iv = setInterval(refreshAll, 30000);
-    const sub = subscribeLocations((l) => {
-      setLocs((ls) => {
-        const next = ls.filter((x) => x.user_id !== l.user_id);
-        return [l, ...next];
-      });
-    });
+    const iv = setInterval(refreshAll, 10000);
     const presence = supabase
       .channel('nexus-presence')
       .on('presence', { event: 'sync' }, () => {
@@ -141,7 +135,6 @@ export default function Admin() {
       .subscribe();
     return () => {
       clearInterval(iv);
-      sub.unsubscribe();
       presence.unsubscribe();
       leafletRef.current?.remove();
       leafletRef.current = null;
