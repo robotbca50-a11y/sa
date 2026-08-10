@@ -1153,7 +1153,7 @@ export default function ChatApp() {
       <div className="relative z-10 flex-1 flex min-h-0 min-w-0">
         {/* SIDEBAR */}
         <aside
-          className={`${tab === 'chats' ? (active ? 'hidden lg:flex' : 'flex') : 'hidden'} w-full lg:w-[360px] min-w-0 flex-col border-r border-white/10 bg-panel/50 min-h-0`}
+          className={`${tab === 'chats' ? (active ? 'hidden md:flex' : 'flex') : 'hidden'} w-full md:w-[360px] min-w-0 flex-col border-r border-white/10 bg-panel/50 min-h-0`}
         >
           <div className="border-b border-white/10">
             <Stories />
@@ -1169,7 +1169,7 @@ export default function ChatApp() {
         </aside>
 
         {/* CONVERSATION */}
-        <main className={`flex-1 min-h-0 min-w-0 max-w-full ${tab === 'chats' ? (active ? 'flex' : 'hidden lg:flex') : 'hidden'}`}>
+        <main className={`flex-1 min-h-0 min-w-0 max-w-full ${tab === 'chats' ? (active ? 'flex' : 'hidden md:flex') : 'hidden'}`}>
           {active && activeKeyObj ? (
             <Conversation
               kind={active.kind}

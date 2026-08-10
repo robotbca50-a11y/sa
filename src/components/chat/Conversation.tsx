@@ -100,7 +100,7 @@ export default function Conversation({
     <div className="flex flex-col h-full flex-1 w-full min-w-0">
       {/* header */}
       <header className="flex items-center gap-3 px-3 sm:px-4 py-3 border-b border-white/10 bg-panel/80 backdrop-blur-xl">
-        <button className="lg:hidden text-slate-400" onClick={onBack} title="Kembali">
+        <button className="md:hidden text-slate-400" onClick={onBack} title="Kembali">
           <ArrowLeft size={20} />
         </button>
         <div className="relative">
