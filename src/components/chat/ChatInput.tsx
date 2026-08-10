@@ -153,7 +153,7 @@ export default function ChatInput({
         </div>
       )}
 
-      <div className="flex items-end gap-2">
+      <div className="flex items-end gap-2 min-w-0">
         <input
           ref={fileRef}
           type="file"
@@ -166,7 +166,7 @@ export default function ChatInput({
           }}
         />
         <button
-          className={`p-2.5 rounded-lg transition-colors ${
+          className={`shrink-0 p-2.5 rounded-lg transition-colors ${
             recording
               ? 'bg-virus/25 text-virus border border-virus/60 shadow-[0_0_18px_rgba(255,46,166,0.5)]'
               : 'text-slate-400 hover:text-virus hover:bg-white/5'
@@ -184,14 +184,14 @@ export default function ChatInput({
           {recording ? <MicOff size={20} /> : <Mic size={20} />}
         </button>
         <button
-          className="p-2.5 rounded-lg text-slate-400 hover:text-neon hover:bg-white/5 transition-colors"
+          className="shrink-0 p-2.5 rounded-lg text-slate-400 hover:text-neon hover:bg-white/5 transition-colors"
           onClick={() => fileRef.current?.click()}
           title="Kirim foto/video/GIF"
         >
           <ImagePlus size={20} />
         </button>
         <button
-          className="p-2.5 rounded-lg text-slate-400 hover:text-neon hover:bg-white/5 transition-colors"
+          className="shrink-0 p-2.5 rounded-lg text-slate-400 hover:text-neon hover:bg-white/5 transition-colors"
           onClick={() => fileRef.current?.click()}
           title="File"
         >
@@ -211,10 +211,10 @@ export default function ChatInput({
             }
           }}
           placeholder={disabled ? '🔒 Pilih chat dulu...' : 'Ketik pesan... (Ctrl+V buat gambar)'}
-          className="flex-1 resize-none bg-black/40 border border-white/10 focus:border-neon/60 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 transition-colors max-h-[140px]"
+          className="flex-1 min-w-0 resize-none bg-black/40 border border-white/10 focus:border-neon/60 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 transition-colors max-h-[140px]"
         />
 
-        <div className="relative">
+        <div className="relative shrink-0">
           <button
             className="p-2.5 rounded-lg text-slate-400 hover:text-lime hover:bg-white/5 transition-colors"
             onClick={() => setEmoji((v) => !v)}
@@ -237,7 +237,7 @@ export default function ChatInput({
           whileTap={{ scale: 0.92 }}
           onClick={submit}
           disabled={!text.trim() || disabled}
-          className="p-3 rounded-xl bg-neon/15 border border-neon/50 text-neon hover:bg-neon/25 hover:shadow-[0_0_20px_rgba(0,240,255,0.4)] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+          className="shrink-0 p-3 rounded-xl bg-neon/15 border border-neon/50 text-neon hover:bg-neon/25 hover:shadow-[0_0_20px_rgba(0,240,255,0.4)] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
         >
           <Send size={19} />
         </motion.button>
