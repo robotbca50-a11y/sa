@@ -1,10 +1,15 @@
-/* NEXUS service worker — push notifications */
+/* NEXUS service worker — push notifications + PWA installable */
 self.addEventListener('install', (e) => {
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(clients.claim());
+});
+
+// Fetch passthrough (network-first, tanpa cache) — wajib biar PWA installable.
+self.addEventListener('fetch', (event) => {
+  event.respondWith(fetch(event.request));
 });
 
 self.addEventListener('push', (event) => {

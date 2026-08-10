@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { CornerUpLeft, Smile, Pencil, Trash2, Lock, Clock, Music, RotateCcw } from 'lucide-react';
 import { decodeMessage, evictCache } from '../../lib/decrypt';
@@ -10,6 +10,9 @@ function fmtTime(iso: string) {
   const d = new Date(iso);
   return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
 }
+
+// Reaksi cepat ala WhatsApp/IG: tahan lama pesan → muncul bar ini.
+const REACT_QUICK = ['❤️', '👍', '😂', '😮', '😢', '😭', '🔥', '🥳'];
 
 export default function MessageBubble({
   msg,
@@ -49,6 +52,16 @@ export default function MessageBubble({
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState('');
   const [decodeFailed, setDecodeFailed] = useState(false);
+  const [swipe, setSwipe] = useState(0);
+  const [quick, setQuick] = useState(false);
+
+  // gesture state
+  const startRef = useRef<{ x: number; y: number } | null>(null);
+  const movedRef = useRef(false);
+  const longFiredRef = useRef(false);
+  const swipeDoneRef = useRef(false);
+  const longTimerRef = useRef<number | null>(null);
+  const lastTapRef = useRef(0);
 
   useEffect(() => {
     if (msg.deleted) return;
@@ -62,6 +75,83 @@ export default function MessageBubble({
       live = false;
     };
   }, [msg, keyObj]);
+
+  useEffect(() => {
+    return () => {
+      if (longTimerRef.current) window.clearTimeout(longTimerRef.current);
+    };
+  }, []);
+
+  // ---------- GESTURE: swipe kanan = balas, tahan = reaksi, dobel tap = ❤️ ----------
+  function gDown(e: React.PointerEvent) {
+    if ((e.target as HTMLElement).closest('button, a, textarea, input, video, audio, .no-gesture')) return;
+    startRef.current = { x: e.clientX, y: e.clientY };
+    movedRef.current = false;
+    longFiredRef.current = false;
+    swipeDoneRef.current = false;
+    setSwipe(0);
+    if (longTimerRef.current) window.clearTimeout(longTimerRef.current);
+    longTimerRef.current = window.setTimeout(() => {
+      if (startRef.current && !movedRef.current) {
+        longFiredRef.current = true;
+        setQuick(true);
+      }
+    }, 420);
+  }
+
+  function gMove(e: React.PointerEvent) {
+    const s = startRef.current;
+    if (!s) return;
+    const dx = e.clientX - s.x;
+    const dy = e.clientY - s.y;
+    if (Math.abs(dy) > Math.abs(dx) + 6 && Math.abs(dy) > 8) {
+      if (longTimerRef.current) {
+        window.clearTimeout(longTimerRef.current);
+        longTimerRef.current = null;
+      }
+      startRef.current = null;
+      setSwipe(0);
+      return;
+    }
+    if (Math.abs(dx) > 8) {
+      movedRef.current = true;
+      if (longTimerRef.current) {
+        window.clearTimeout(longTimerRef.current);
+        longTimerRef.current = null;
+      }
+    }
+    if (dx > 12 && !swipeDoneRef.current) {
+      setSwipe(Math.min(64, dx * 0.5));
+      if (dx > 56) {
+        swipeDoneRef.current = true;
+        setSwipe(0);
+        onReply();
+      }
+    }
+  }
+
+  function gUp() {
+    const hadStart = startRef.current != null;
+    const wasLong = longFiredRef.current;
+    if (longTimerRef.current) {
+      window.clearTimeout(longTimerRef.current);
+      longTimerRef.current = null;
+    }
+    startRef.current = null;
+    setSwipe(0);
+    if (swipeDoneRef.current) {
+      swipeDoneRef.current = false;
+      return;
+    }
+    if (wasLong || !hadStart || movedRef.current) return;
+    const now = Date.now();
+    if (now - lastTapRef.current < 320) {
+      lastTapRef.current = 0;
+      onReact('❤️');
+    } else {
+      lastTapRef.current = now;
+    }
+  }
 
   if (msg.deleted) {
     return (
@@ -91,9 +181,55 @@ export default function MessageBubble({
       initial={{ opacity: 0, y: 8, scale: 0.97 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ duration: 0.18 }}
-      className={`flex ${isMine ? 'justify-end' : 'justify-start'} px-3 my-1 group`}
+      className={`relative flex ${isMine ? 'justify-end' : 'justify-start'} px-3 my-1 group select-none`}
+      style={{ touchAction: 'pan-y' }}
     >
-      <div className={`max-w-[94%] sm:max-w-[85%] lg:max-w-[78%] relative`}>
+      {swipe > 8 && (
+        <div
+          className="absolute left-4 top-1/2 -translate-y-1/2 z-10 flex items-center gap-1.5 glass rounded-full px-2.5 py-1.5 text-neon font-mono text-xs pointer-events-none whitespace-nowrap"
+          style={{ opacity: Math.min(1, swipe / 40) }}
+        >
+          <CornerUpLeft size={13} /> Balas
+        </div>
+      )}
+
+      {quick && (
+        <div className="fixed inset-0 z-30" onPointerDown={() => setQuick(false)} />
+      )}
+
+      <div
+        className={`max-w-[94%] sm:max-w-[85%] lg:max-w-[78%] relative transition-transform duration-150`}
+        style={swipe ? { transform: `translateX(${swipe}px)`, transition: 'none' } : undefined}
+        onPointerDown={gDown}
+        onPointerMove={gMove}
+        onPointerUp={gUp}
+        onPointerCancel={gUp}
+        onPointerLeave={() => {
+          if (longTimerRef.current) {
+            window.clearTimeout(longTimerRef.current);
+            longTimerRef.current = null;
+          }
+          startRef.current = null;
+          setSwipe(0);
+        }}
+      >
+        {quick && (
+          <div className="absolute -top-12 left-1/2 -translate-x-1/2 z-40 flex items-center gap-0.5 glass rounded-full px-2 py-1.5 hud-corner whitespace-nowrap">
+            {REACT_QUICK.map((e) => (
+              <button
+                key={e}
+                className="text-2xl hover:scale-125 transition-transform"
+                onClick={() => {
+                  onReact(e);
+                  setQuick(false);
+                }}
+              >
+                {e}
+              </button>
+            ))}
+          </div>
+        )}
+
         {!isMine && (
           <div className="flex items-center gap-1.5 mb-0.5 pl-1">
             <Avatar id={senderId} name={senderName} size={16} />
@@ -110,7 +246,7 @@ export default function MessageBubble({
         >
           {replyPreview && (
             <button
-              className="block w-full text-left mb-1.5 px-2 py-1 rounded-md bg-black/30 border-l-2 border-neon/60 text-xs text-slate-400 truncate"
+              className="block w-full text-left mb-1.5 px-2 py-1 rounded-md bg-black/30 border-l-2 border-neon/60 text-xs text-slate-400 truncate no-gesture"
               title={replyPreview}
             >
               ↳ {replyPreview}
@@ -157,7 +293,7 @@ export default function MessageBubble({
                       setEditing(false);
                     }
                   }}
-                  className="w-full bg-black/40 border border-neon/50 rounded-lg px-2 py-1 text-white resize-none"
+                  className="w-full bg-black/40 border border-neon/50 rounded-lg px-2 py-1 text-white resize-none no-gesture"
                 />
               ) : (
                 decoded.text
@@ -219,7 +355,7 @@ export default function MessageBubble({
           </div>
         )}
 
-        {/* hover menu */}
+        {/* hover menu (desktop) */}
         <div
           className={`absolute ${isMine ? 'left-full' : 'right-full'} top-0 ml-2 mr-2 hidden group-hover:flex flex-col gap-0.5 glass rounded-lg p-1 z-20`}
         >
