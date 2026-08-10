@@ -214,11 +214,11 @@ export default function MessageBubble({
         }}
       >
         {quick && (
-          <div className="absolute -top-12 left-1/2 -translate-x-1/2 z-40 flex items-center gap-0.5 glass rounded-full px-2 py-1.5 hud-corner whitespace-nowrap">
+          <div className="absolute -top-12 left-1/2 -translate-x-1/2 z-40 flex items-center gap-0.5 glass rounded-full px-2 py-1.5 hud-corner whitespace-nowrap max-w-[calc(100vw-1rem)] overflow-x-auto">
             {REACT_QUICK.map((e) => (
               <button
                 key={e}
-                className="text-2xl hover:scale-125 transition-transform"
+                className="text-2xl hover:scale-125 transition-transform shrink-0"
                 onClick={() => {
                   onReact(e);
                   setQuick(false);
@@ -255,12 +255,12 @@ export default function MessageBubble({
 
           {decoded?.mediaUrl ? (
             decoded.mediaMime.startsWith('audio/') ? (
-              <div className="flex items-center gap-2 py-1 min-w-[200px] max-w-full">
+              <div className="flex items-center gap-2 py-1 min-w-0 max-w-full">
                 <Music size={16} className="text-virus shrink-0" />
                 <audio
                   src={decoded.mediaUrl}
                   controls
-                  className="h-10 rounded-lg min-w-0 flex-1"
+                  className="h-10 rounded-lg min-w-0 flex-1 max-w-full"
                 />
               </div>
             ) : decoded.mediaMime.startsWith('video/') ? (
@@ -387,6 +387,7 @@ export default function MessageBubble({
         {picker && (
           <EmojiPicker
             reaction
+            align={isMine ? 'right' : 'left'}
             onPick={(e) => {
               onReact(e);
               setPicker(false);

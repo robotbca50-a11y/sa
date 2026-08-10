@@ -11,14 +11,18 @@ export default function EmojiPicker({
   onPick,
   reaction,
   onClose,
+  align = 'right',
 }: {
   onPick: (e: string) => void;
   reaction?: boolean;
   onClose: () => void;
+  align?: 'left' | 'right';
 }) {
   const list = reaction ? REACT : FULL;
   return (
-    <div className="absolute bottom-full mb-2 right-0 z-40 glass rounded-xl p-2 w-72 hud-corner">
+    <div
+      className={`absolute bottom-full mb-2 ${align === 'left' ? 'left-0' : 'right-0'} z-40 glass rounded-xl p-2 w-72 max-w-[calc(100vw-1.5rem)] hud-corner`}
+    >
       <div className="flex items-center justify-between px-1 pb-1">
         <span className="font-mono text-[10px] text-neon tracking-widest">
           {reaction ? 'REACT //' : 'EMOJI //'}

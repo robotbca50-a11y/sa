@@ -17,6 +17,17 @@ body,
   height: 100dvh;
 }
 
+html,
+body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+#root {
+  width: 100%;
+  max-width: 100vw;
+}
+
 body {
   margin: 0;
   background: #05060a;
@@ -126,6 +137,14 @@ textarea,
 select,
 button {
   font-family: inherit;
+}
+
+/* Cegah auto-zoom iOS saat fokus ke kotak teks kecil (font <16px bikin Safari
+   memperbesar halaman sehingga tampilan kepotong kiri/kanan). */
+input,
+textarea,
+select {
+  font-size: 16px;
 }
 input:focus,
 textarea:focus {

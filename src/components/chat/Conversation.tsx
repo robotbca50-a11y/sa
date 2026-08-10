@@ -160,7 +160,7 @@ export default function Conversation({
       )}
 
       {/* messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto py-3 space-y-1 relative">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden py-3 space-y-1 relative">
         {messages.length === 0 && (
           <div className="h-full flex flex-col items-center justify-center text-slate-600">
             <div className="text-4xl mb-3">🔐</div>
