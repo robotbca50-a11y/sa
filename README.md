@@ -53,6 +53,31 @@ npm run dev        # http://localhost:5173
 npm run build      # produksi
 ```
 
+## App iOS & Android (Capacitor — satu codebase, enkripsi sama persis)
+Web ini dibungkus jadi app native dengan **Capacitor**. Karena UI, logika chat, dan
+kripto E2E-nya file yang SAMA dengan web, maka iOS / Android / web saling sinkron
+terhadap satu database tanpa risiko kunci saling menimpa (multi-key E2E).
+
+```bash
+npm install @capacitor/core @capacitor/cli @capacitor/ios @capacitor/android
+npm run build        # bikin dist/
+npx cap sync         # salin dist ke android/ dan ios/
+```
+
+- **Android**: buka di Android Studio → `npx cap open android`
+  (atau `npm run cap:open:android`). Build APK/AAB → Run.
+- **iOS (butuh Mac + Xcode)**: `npm run cap:open:ios`
+  (`npx cap open ios`). Set Team di Signing & Capabilities, lalu Run ke device.
+- Setiap ubah kode web: `npm run build && npx cap sync` lalu build ulang native.
+- Kode native yang di-commit hanya skeleton; web assets (`android/.../public`,
+  `ios/.../public`) di-gitignore dan selalu disalin ulang oleh `cap sync`.
+- Konfigurasi app native ada di `capacitor.config.ts` (appId `com.nexus.chat`,
+  scheme `https://localhost` biar WebCrypto jalan di Android; iOS otomatis secure).
+
+Catatan push: di app native, Web Push (VAPID) tidak berlaku seperti di browser —
+notifikasi native butuh plugin `@capacitor/push-notifications` + FCM (Android) /
+APNs (iOS). Chat tetap live via Supabase Realtime di semua platform.
+
 ## Alur pendaftaran
 - User daftar → status `pending` → Master ACC di Panel Admin → baru bisa login.
 - Kunci privat disimpan di IndexedDB perangkat. Login harus dari device yang sama pas daftar.

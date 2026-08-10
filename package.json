@@ -7,9 +7,16 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "start": "serve -s dist -l ${PORT:-3000}"
+    "start": "serve -s dist -l ${PORT:-3000}",
+    "cap:sync": "npm run build && cap sync",
+    "cap:open:ios": "cap sync ios && cap open ios",
+    "cap:open:android": "cap sync android && cap open android"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/ios": "^8.5.0",
     "@supabase/supabase-js": "^2.45.4",
     "framer-motion": "^11.5.4",
     "leaflet": "^1.9.4",
@@ -26,9 +33,9 @@
     "@vitejs/plugin-react": "^4.3.2",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.47",
+    "serve": "^14.2.4",
     "tailwindcss": "^3.4.13",
     "typescript": "^5.5.4",
-    "vite": "^5.4.8",
-    "serve": "^14.2.4"
+    "vite": "^5.4.8"
   }
 }
