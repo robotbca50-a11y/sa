@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Ghost, Bell, LogOut, MessageSquare, MonitorPlay,
-  Music,
+  Music, Download,
 } from 'lucide-react';
 import { useStore } from '../../lib/store';
 import {
@@ -34,6 +34,7 @@ import Reels from '../features/Reels';
 import WatchParty from '../features/WatchParty';
 import VideoCall, { IncomingCallOverlay } from '../features/VideoCall';
 import InstallBanner from '../InstallBanner';
+import { showInstallBanner } from '../../lib/install';
 import CyberBg from './CyberBg';
 import type { ConversationItem, Group, Msg, Reaction, User } from '../../types';
 
@@ -1111,6 +1112,13 @@ export default function ChatApp() {
                 {totalUnread}
               </span>
             )}
+          </button>
+          <button
+            onClick={showInstallBanner}
+            className="p-2 rounded-lg text-slate-400 hover:text-neon border border-white/10"
+            title="Pasang aplikasi"
+          >
+            <Download size={17} />
           </button>
           <button
             onClick={logout}

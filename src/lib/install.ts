@@ -70,3 +70,18 @@ export function dismissInstall() {
     /* noop */
   }
 }
+
+export function clearInstallDismiss() {
+  try {
+    localStorage.removeItem(DISMISS_KEY);
+  } catch {
+    /* noop */
+  }
+}
+
+// Dipicu dari header (tombol PASANG): tampilkan ulang banner install meski
+// sudah pernah di-dismiss.
+export function showInstallBanner() {
+  clearInstallDismiss();
+  window.dispatchEvent(new CustomEvent('nexus:show-install'));
+}
