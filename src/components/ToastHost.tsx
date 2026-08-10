@@ -6,7 +6,7 @@ export default function ToastHost() {
   const pop = useStore((s) => s.popToast);
 
   return (
-    <div className="fixed top-4 right-4 z-[90] flex flex-col gap-2 w-[min(92vw,360px)]">
+    <div className="pt-safe fixed top-0 right-0 z-[90] flex flex-col items-end gap-2 p-3 w-[min(100vw,420px)]">
       <AnimatePresence>
         {toasts.map((t) => (
           <motion.div

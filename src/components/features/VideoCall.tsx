@@ -168,7 +168,7 @@ export function IncomingCallOverlay({ peer, onAccept, onDecline }: { peer: User;
     <motion.div
       initial={{ opacity: 0, y: -40 }}
       animate={{ opacity: 1, y: 0 }}
-      className="fixed top-0 inset-x-0 z-[86] glass border-b border-virus/40 p-4 flex items-center gap-4"
+      className="pt-safe fixed top-0 inset-x-0 z-[86] glass border-b border-virus/40 p-4 flex items-center gap-4"
     >
       <Avatar id={peer.id} name={peer.username} size={46} />
       <div className="flex-1">

@@ -11,6 +11,13 @@ export const VAPID_PUBLIC_KEY =
 let swReady = false;
 let pushActive = false;
 
+export function notifSupported() {
+  return 'Notification' in window && 'PushManager' in window;
+}
+
+// Daftarkan service worker saja, TANPA meminta izin. Permission di browser
+// mobile (Android Chrome & iOS Safari) HANYA bisa diminta dari user gesture,
+// jadi izin diminta via ensurePush() yang dipicu klik tombol 🔔.
 export async function initNotifications() {
   if (!('serviceWorker' in navigator)) return;
   try {
@@ -21,10 +28,6 @@ export async function initNotifications() {
   } catch {
     swReady = false;
   }
-}
-
-export function notifSupported() {
-  return 'Notification' in window && 'PushManager' in window;
 }
 
 export async function requestNotifPermission(): Promise<boolean> {
@@ -71,8 +74,8 @@ export async function savePushSub(sub: PushSubscription | null): Promise<boolean
   }
 }
 
-// Dipanggil otomatis saat login + dari tombol bel: minta izin (kalau belum)
-// lalu subscribe + simpan ke database supaya edge function bisa kirim push.
+// Dipanggil dari tombol bel (user gesture): minta izin (kalau belum) lalu
+// subscribe + simpan ke database supaya edge function bisa kirim push.
 export async function ensurePush(): Promise<boolean> {
   if (!notifSupported()) return false;
   if (!swReady) await initNotifications();
@@ -123,11 +126,13 @@ export async function triggerPush(recipientIds: string[], title: string, body: s
   }
 }
 
-// Notifikasi saat halaman open / background tab
+// Notifikasi sistem — hanya muncul saat tab tersembunyi (di background), biar
+// tidak dobel dengan toast in-app dan tidak mengganggu user yang sedang buka.
 export function nativeNotify(title: string, body?: string) {
   if (!notifSupported() || Notification.permission !== 'granted') return;
+  if (!document.hidden) return;
   try {
-    new Notification(title, { body, icon: '/nexus.svg' });
+    new Notification(title, { body, icon: '/nexus.svg', tag: `nexus:${title}` });
   } catch {
     /* noop */
   }
@@ -142,12 +147,11 @@ export function appNotify(title: string, body: string, opts: { icon?: string; on
     kind: 'msg',
     onClick: opts.onClick,
   });
-  const hidden = document.hidden;
-  if (hidden) {
+  if (document.hidden) {
     document.title = `● ${title} — NEXUS`;
   }
-  // Selalu tampilkan notifikasi sistem kalau izin sudah granted — baik user
-  // lagi di web, di tab lain, atau app PWA yang dipasang. Yang penting tetap muncul.
+  // Notifikasi sistem muncul saat app di background — tetap muncul walau user
+  // sedang di tab lain atau PWA yang dipasang di layar utama.
   nativeNotify(title, body);
 }
 

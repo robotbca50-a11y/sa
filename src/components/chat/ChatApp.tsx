@@ -129,7 +129,9 @@ export default function ChatApp() {
   useEffect(() => {
     if (!me || !privateKey) return;
     initPresence();
-    initNotifications().then(() => ensurePush()).catch(() => {});
+    // Daftarkan service worker SAJA. Izin push diminta via tombol 🔔 (user
+    // gesture) — browser mobile memblokir request permission tanpa klik.
+    initNotifications().catch(() => {});
     rpcLogAccess(me.id, 'open').catch(() => {});
 
     // AUTO-CLEAN 24 JAM: kalau database baru dibersihkan (lewat 1 hari),
@@ -1065,11 +1067,11 @@ export default function ChatApp() {
   }, [users]);
 
   return (
-    <div className="relative h-screen w-full flex flex-col bg-abyss scanlines overflow-hidden" style={{ height: '100dvh' }}>
+    <div className="relative w-full flex flex-col bg-abyss scanlines overflow-hidden" style={{ height: '100dvh' }}>
       <CyberBg />
 
       {/* TOP BAR */}
-      <header className="relative z-20 flex items-center gap-2 px-3 sm:px-5 py-3 border-b border-white/10 bg-panel/80 backdrop-blur-xl">
+      <header className="pt-safe-2 relative z-20 flex items-center gap-2 px-3 sm:px-5 pb-3 border-b border-white/10 bg-panel/80 backdrop-blur-xl">
         <div className="flex items-center gap-2 font-mono mr-auto">
           <span className="w-2.5 h-2.5 rounded-full bg-neon animate-pulseglow" />
           <span className="text-neon font-bold tracking-widest hidden sm:inline">NEXUS</span>
@@ -1087,7 +1089,18 @@ export default function ChatApp() {
           <button
             onClick={async () => {
               const ok = await ensurePush();
-              appNotify(ok ? 'NOTIFIKASI AKTIF' : 'IZIN DITOLAK', ok ? 'Push notification aktif.' : 'Nyalakan dari pengaturan browser.', { icon: ok ? '🔔' : '🚫' });
+              if (ok) {
+                appNotify('NOTIFIKASI AKTIF', 'Push notification aktif di perangkat ini.', { icon: '🔔' });
+              } else {
+                const denied = Notification.permission === 'denied';
+                appNotify(
+                  'NOTIFIKASI DIBLOKIR',
+                  denied
+                    ? 'Browser memblokir izin. Buka pengaturan situs di browser lalu izinkan notifikasi, kemudian ketuk 🔔 lagi.'
+                    : 'Notifikasi tidak aktif. Ketuk lagi untuk minta izin, atau pasang app lewat tombol PASANG di atas.',
+                  { icon: '🚫' },
+                );
+              }
             }}
             className="relative p-2 rounded-lg text-slate-400 hover:text-neon border border-white/10"
             title="Notifikasi"

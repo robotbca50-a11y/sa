@@ -51,13 +51,13 @@ export default function InstallBanner() {
     <AnimatePresence>
       {show && (
         <motion.div
-          initial={{ opacity: 0, y: 24 }}
+          initial={{ opacity: 0, y: -24 }}
           animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: 24 }}
+          exit={{ opacity: 0, y: -24 }}
           transition={{ duration: 0.25 }}
-          className="fixed bottom-3 left-1/2 -translate-x-1/2 z-[60] w-[min(92vw,400px)]"
+          className="pt-safe fixed top-0 left-1/2 -translate-x-1/2 z-[60] w-full flex justify-center px-3"
         >
-          <div className="glass rounded-2xl border border-neon/30 p-4 hud-corner shadow-[0_0_30px_rgba(0,240,255,0.15)]">
+          <div className="glass rounded-2xl border border-neon/30 p-4 hud-corner shadow-[0_0_30px_rgba(0,240,255,0.15)] w-[min(100%,480px)]">
             <div className="flex items-start gap-3">
               <div className="shrink-0 w-10 h-10 rounded-xl bg-neon/10 border border-neon/40 flex items-center justify-center">
                 {ios && !canAutoInstall ? <Smartphone size={20} className="text-neon" /> : <Download size={20} className="text-neon" />}
