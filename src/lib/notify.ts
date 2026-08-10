@@ -141,8 +141,10 @@ export function appNotify(title: string, body: string, opts: { icon?: string; on
   const hidden = document.hidden;
   if (hidden) {
     document.title = `● ${title} — NEXUS`;
-    nativeNotify(title, body);
   }
+  // Selalu tampilkan notifikasi sistem kalau izin sudah granted — baik user
+  // lagi di web, di tab lain, atau app PWA yang dipasang. Yang penting tetap muncul.
+  nativeNotify(title, body);
 }
 
 export function updateTitle(unreadTotal: number) {

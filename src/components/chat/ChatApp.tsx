@@ -31,6 +31,7 @@ import Stories from '../features/Stories';
 import Reels from '../features/Reels';
 import WatchParty from '../features/WatchParty';
 import VideoCall, { IncomingCallOverlay } from '../features/VideoCall';
+import InstallBanner from '../InstallBanner';
 import CyberBg from './CyberBg';
 import type { ConversationItem, Group, Msg, Reaction, User } from '../../types';
 
@@ -1091,6 +1092,8 @@ export default function ChatApp() {
       {call && (
         <VideoCall mode={call.mode} peer={call.peer} onClose={() => { setCall(null); inCallRef.current = false; }} />
       )}
+
+      <InstallBanner />
     </div>
   );
 }
