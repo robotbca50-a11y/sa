@@ -13,6 +13,7 @@ import {
   rpcGroupCreate, rpcGroupAddMember, rpcGroupMembers, rpcGetGroupKey, rpcSaveGroupKey,
   rpcMarkMessagesRead, rpcMarkGroupMessagesRead,
   rpcLogout, rpcLogAccess, uploadMedia, toastErr,
+  rpcMaybeCleanup, wipeMediaBucket,
 } from '../../lib/api';
 import {
   deriveSharedKey, encryptText, decryptText, randomAESKey, exportAESKey, encryptToRecipient,
@@ -20,9 +21,9 @@ import {
 } from '../../lib/crypto';
 import { initPresence, stopPresence } from '../../lib/realtime';
 import { subscribeMessages, subscribeGroupMessages, subscribeReactions, subscribeGroupReactions, onTyping, onCall } from '../../lib/realtime';
-import { initNotifications, requestNotifPermission, appNotify, updateTitle } from '../../lib/notify';
+import { initNotifications, ensurePush, unsubscribePush, appNotify, updateTitle, triggerPush } from '../../lib/notify';
 import { decodeMessage, evictCache, clearCache } from '../../lib/decrypt';
-import { clearSession, readMsgCache, writeMsgCache } from '../../lib/session';
+import { clearSession, readMsgCache, writeMsgCache, clearChatCache } from '../../lib/session';
 import Conversation from '../chat/Conversation';
 import ConversationList from '../chat/ConversationList';
 import { NewChatModal, NewGroupModal, AddMemberModal, GhostSettingsModal } from '../chat/modals';
@@ -120,8 +121,20 @@ export default function ChatApp() {
   useEffect(() => {
     if (!me || !privateKey) return;
     initPresence();
-    initNotifications();
+    initNotifications().then(() => ensurePush()).catch(() => {});
     rpcLogAccess(me.id, 'open').catch(() => {});
+
+    // AUTO-CLEAN 24 JAM: kalau database baru dibersihkan (lewat 1 hari),
+    // bersihkan juga cache + media di browser biar history benar-benar hilang.
+    rpcMaybeCleanup()
+      .then((cleaned) => {
+        if (cleaned) {
+          clearCache();
+          clearChatCache();
+          wipeMediaBucket();
+        }
+      })
+      .catch(() => {});
 
     const cached = readCache<{ users: User[]; dms: any[] }>(`nexus:cache:${me.id}`);
     if (cached) {
@@ -536,6 +549,24 @@ export default function ChatApp() {
     writeMsgCache(key, next);
   }
 
+  // Setelah pesan terkirim: kasih tahu perangkat penerima lewat Web Push.
+  // Konten TIDAK ikut dikirim (cuma judul + badan generik, isi tetap E2E).
+  async function pushAfterSend(a: { key: string; kind: 'dm' | 'group' }, title: string, body: string) {
+    try {
+      if (a.kind === 'dm') {
+        const peer = dmsRef.current.find((d) => d.key === a.key)?.peerId;
+        if (peer) await triggerPush([peer], title, body);
+      } else {
+        const gid = a.key.replace('grp:', '');
+        const members = await rpcGroupMembers(gid).catch(() => []);
+        const ids = members.map((m) => m.id).filter((id) => id !== meRef.current?.id);
+        if (ids.length) await triggerPush(ids, title, body);
+      }
+    } catch {
+      /* push opsional */
+    }
+  }
+
   async function resendMsg(m: Msg) {
     const a = activeRef.current;
     if (!a || !me) return;
@@ -631,6 +662,11 @@ export default function ChatApp() {
         );
       }
       refetchActive();
+      void pushAfterSend(
+        a,
+        a.kind === 'dm' ? me!.username : (groupsRef.current.find((g) => g.id === a.key.replace('grp:', ''))?.name ?? 'Grup'),
+        a.kind === 'dm' ? 'Pesan baru' : `Pesan dari ${me!.username}`,
+      );
     } catch (e) {
       patchLocalMsg(a.key, localId, { pending: false, failed: true });
       appNotify('GAGAL KIRIM', toastErr(e), { icon: '⚠️' });
@@ -708,6 +744,11 @@ export default function ChatApp() {
           );
         }
         refetchActive();
+        void pushAfterSend(
+          a,
+          a.kind === 'dm' ? me!.username : (groupsRef.current.find((g) => g.id === a.key.replace('grp:', ''))?.name ?? 'Grup'),
+          a.kind === 'dm' ? `📎 ${type}` : `📎 ${type} dari ${me!.username}`,
+        );
       } catch (e) {
         patchLocalMsg(a.key, localId, { pending: false, failed: true });
         appNotify('GAGAL KIRIM MEDIA', toastErr(e), { icon: '⚠️' });
@@ -856,10 +897,11 @@ export default function ChatApp() {
     setIncoming(null);
   }
 
-  function logout() {
+  async function logout() {
     if (me) rpcLogAccess(me.id, 'logout').catch(() => {});
     stopPresence();
     clearCache();
+    await unsubscribePush().catch(() => {});
     rpcLogout();
     clearSession();
     setSession(null, null);
@@ -918,7 +960,7 @@ export default function ChatApp() {
           </button>
           <button
             onClick={async () => {
-              const ok = await requestNotifPermission();
+              const ok = await ensurePush();
               appNotify(ok ? 'NOTIFIKASI AKTIF' : 'IZIN DITOLAK', ok ? 'Push notification aktif.' : 'Nyalakan dari pengaturan browser.', { icon: ok ? '🔔' : '🚫' });
             }}
             className="relative p-2 rounded-lg text-slate-400 hover:text-neon border border-white/10"

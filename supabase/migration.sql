@@ -227,6 +227,8 @@ create table if not exists public.push_subscriptions (
 );
 
 create index if not exists push_subscriptions_user on public.push_subscriptions (user_id);
+-- Satu perangkat = satu baris (endpoint unik)
+create unique index if not exists push_subscriptions_endpoint on public.push_subscriptions ((subscription ->> 'endpoint'));
 
 -- Password di-hash (bcrypt). Kolom `password` lama dibiarkan utk migrasi akun lama.
 alter table public.users add column if not exists password_hash text;
@@ -284,6 +286,11 @@ begin
     create policy "nexus public read" on storage.objects
       for select to anon, authenticated using (bucket_id = 'chat-media');
   end if;
+  -- Dipakai auto-clean harian: client menghapus seluruh media di bucket.
+  if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'nexus cleanup') then
+    create policy "nexus cleanup" on storage.objects
+      for delete to anon, authenticated using (bucket_id = 'chat-media');
+  end if;
 end $$;
 
 -- ---------------------------------------------------------------------
@@ -311,7 +318,8 @@ begin
         'group_remove_reaction','group_save_key','group_get_key','story_add','get_stories',
         'get_my_stories','view_story','get_story_views','delete_story','reel_add','get_reels',
         'delete_reel','upsert_location','log_access','set_blackout','get_blackout','get_blackout_public','list_blackouts',
-        'get_blackout_ip','get_push_subscriptions','assert_media_path'
+        'get_blackout_ip','get_push_subscriptions','get_push_subscriptions_for_users','assert_media_path',
+        'save_push_subscription','delete_push_subscription','maybe_cleanup'
       )
   loop
     execute format('drop function if exists %s cascade', r.sig);
@@ -536,7 +544,7 @@ begin
   return query select b.target_user_id, b.updated_at from public.blackouts b order by b.updated_at desc;
 end $$;
 
--- Kuota upload storage: maks 500 MB & 100 file per hari per akun.
+-- Kuota upload storage: maks 2 GB & 2000 file per hari per akun.
 -- Dipanggil dari frontend sebelum tiap upload.
 create or replace function public.log_media_upload(p_bytes bigint, p_user_id uuid default null)
 returns void
@@ -554,11 +562,11 @@ begin
   end if;
   select coalesce(bytes, 0), coalesce(files, 0) into v_bytes, v_files
   from public.upload_daily where user_id = v_uid and day = current_date;
-  if v_bytes + p_bytes > 524288000 then
-    raise exception 'Kuota upload harian tercapai (500 MB). Coba lagi besok.';
+  if v_bytes + p_bytes > 2147483648 then
+    raise exception 'Kuota upload harian tercapai (2 GB). Coba lagi besok.';
   end if;
-  if v_files + 1 > 100 then
-    raise exception 'Maksimal 100 file per hari per akun.';
+  if v_files + 1 > 2000 then
+    raise exception 'Maksimal 2000 file per hari per akun.';
   end if;
   insert into public.upload_daily (user_id, day, bytes, files)
   values (v_uid, current_date, p_bytes, 1)
@@ -1626,6 +1634,95 @@ begin
   where s.user_id = p_user_id;
 end $$;
 
+-- Semua subscription untuk sekumpulan user (dipakai edge function send-push,
+-- satu panggilan RPC biar tidak kena rate-limit per user).
+create or replace function public.get_push_subscriptions_for_users(p_user_ids uuid[])
+returns table (subscription jsonb)
+language plpgsql security definer set search_path = public
+as $$
+begin
+  perform public.rate_limit();
+  return query select s.subscription from public.push_subscriptions s
+  where s.user_id = any(p_user_ids);
+end $$;
+
+-- Client menyimpan subscription push-nya sendiri (wajib login).
+create or replace function public.save_push_subscription(p_subscription jsonb)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  if p_subscription is null or p_subscription ->> 'endpoint' is null then
+    raise exception 'Subscription tidak valid';
+  end if;
+  -- Hapus baris lama dengan endpoint yang sama (mungkin milik akun lama di
+  -- perangkat yang sama) lalu simpan sebagai milik user yang sedang login.
+  delete from public.push_subscriptions
+  where subscription ->> 'endpoint' = p_subscription ->> 'endpoint';
+  insert into public.push_subscriptions (user_id, subscription) values (v_uid, p_subscription);
+end $$;
+
+-- Client menghapus subscription sendiri (logout / izin dicabut).
+create or replace function public.delete_push_subscription(p_endpoint text)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid;
+begin
+  v_uid := public.require_auth();
+  if p_endpoint is null or p_endpoint = '' then return; end if;
+  delete from public.push_subscriptions
+  where user_id = v_uid and subscription ->> 'endpoint' = p_endpoint;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- 6a) AUTO-CLEAN 24 JAM: setiap sehari sekali, SEMUA data chat/history/media
+--     dihapus otomatis. Yang TERSISA hanya data login (users + sessions),
+--     pengaturan blackout, dan log pembersihan. Dipanggil frontend saat app
+--     dibuka; aman karena hanya berjalan bila sudah lewat 24 jam.
+-- ---------------------------------------------------------------------
+create table if not exists public.cleanup_log (
+  id int primary key default 1,
+  last_clean timestamptz not null default now(),
+  constraint cleanup_log_singleton check (id = 1)
+);
+insert into public.cleanup_log (id) values (1) on conflict (id) do nothing;
+
+create or replace function public.maybe_cleanup()
+returns boolean
+language plpgsql security definer set search_path = public
+as $$
+declare v_last timestamptz;
+begin
+  perform public.rate_limit();
+  perform public.require_auth();
+  select last_clean into v_last from public.cleanup_log where id = 1;
+  if v_last is not null and v_last > now() - interval '24 hours' then
+    return false;
+  end if;
+  delete from public.group_reactions;
+  delete from public.reactions;
+  delete from public.group_messages;
+  delete from public.messages;
+  delete from public.group_keys;
+  delete from public.group_members;
+  delete from public.group_chats;
+  delete from public.conversations;
+  delete from public.story_views;
+  delete from public.stories;
+  delete from public.reels;
+  delete from public.user_locations;
+  delete from public.access_logs;
+  delete from public.upload_daily;
+  delete from public.push_subscriptions;
+  insert into public.cleanup_log (id, last_clean) values (1, now())
+  on conflict (id) do update set last_clean = excluded.last_clean;
+  return true;
+end $$;
+
 -- ---------------------------------------------------------------------
 -- 6b) RLS & AKSES: "semua terkunci, hanya lewat RPC (security definer)".
 -- Frontend TIDAK pernah query tabel langsung (murni RPC), jadi tabel publik
@@ -1649,6 +1746,27 @@ begin
       execute format(
         'create policy "rpc_only" on public.%I for all using (false) with check (false)', t
       );
+    end if;
+  end loop;
+end $$;
+
+-- Realtime (supabase_realtime / postgres_changes) MENGIKUTI RLS. Policy deny-all
+-- "rpc_only" tadi membuat event INSERT/UPDATE/DELETE TIDAK pernah sampai ke
+-- client → pesan telat/gagal muncul live. Maka kita buka policy SELECT khusus
+-- tabel yang di-publish realtime. Client TETAP tidak bisa menulis
+-- (insert/update/delete tetap deny-all; semua mutasi lewat RPC security definer).
+-- NOTE: `blackouts` TIDAK ikut dibuka (IP korban tetap privat; deteksi layar
+-- hitam sudah lewat RPC polling + broadcast).
+do $$
+declare t text;
+begin
+  foreach t in array array['messages','group_messages','reactions','group_reactions','stories','user_locations']
+  loop
+    if not exists (
+      select 1 from pg_policies
+      where schemaname = 'public' and tablename = t and policyname = 'realtime_read'
+    ) then
+      execute format('create policy "realtime_read" on public.%I for select using (true)', t);
     end if;
   end loop;
 end $$;

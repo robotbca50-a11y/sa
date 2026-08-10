@@ -1,11 +1,12 @@
 // NEXUS — Edge Function untuk push notification beneran (Web Push).
 // Deploy: supabase functions deploy send-push
-// Set env dulu (Supabase Dashboard → Edge Functions → send-push → Secrets):
+// VAPID key bawaan sudah di-set di bawah (private key dipakai server).
+// Opsional override via env (Supabase Dashboard → Edge Functions → Secrets):
 //   VAPID_SUBJECT=mailto:admin@nexus.app
 //   VAPID_PUBLIC_KEY=<base64>
 //   VAPID_PRIVATE_KEY=<base64>
-// Dipanggil client: POST { user_id, title, body, url }
-// atau kirim langsung: POST { subscription: {...}, title, body, url }
+// Dipanggil client: POST { user_ids: string[], title, body, url }
+//   header wajib: x-nexus-token = token login si pengirim
 /// <reference path="./deno.d.ts" />
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
@@ -19,12 +20,12 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 });
 
 const SUBJECT = Deno.env.get('VAPID_SUBJECT') ?? 'mailto:admin@nexus.app';
-const PUBLIC_KEY = Deno.env.get('VAPID_PUBLIC_KEY') ?? '';
-const PRIVATE_KEY = Deno.env.get('VAPID_PRIVATE_KEY') ?? '';
+const PUBLIC_KEY =
+  Deno.env.get('VAPID_PUBLIC_KEY') ?? 'BFwdxTFwDJGB__zI658UFftiEqtxVNcd_0pzo740H0Cr5hwSK0IAZdHOkT35Qwci-PawfRndPpL6UWIiPi9oGBU';
+const PRIVATE_KEY =
+  Deno.env.get('VAPID_PRIVATE_KEY') ?? 'uUyB2EhDWdWyypbiCcsC_xnOuNV-EAwDVbN6m_U3h3w';
 
-if (PUBLIC_KEY && PRIVATE_KEY) {
-  webpush.setVapidDetails(SUBJECT, PUBLIC_KEY, PRIVATE_KEY);
-}
+webpush.setVapidDetails(SUBJECT, PUBLIC_KEY, PRIVATE_KEY);
 
 function fail(msg: string, status = 400): Response {
   return new Response(JSON.stringify({ ok: false, err: msg }), {
@@ -35,29 +36,41 @@ function fail(msg: string, status = 400): Response {
 
 Deno.serve(async (req) => {
   try {
-    const { user_id, title, body, url, subscription } = await req.json();
+    // Wajib login: edge function dipanggil client dengan x-nexus-token.
+    const token = req.headers.get('x-nexus-token') ?? '';
+    if (!token) return fail('Unauthorized', 401);
+    const { data: uid, error: authErr } = await supabase.rpc(
+      'auth_user_id',
+      {},
+      { headers: { 'x-nexus-token': token } },
+    );
+    if (authErr || !uid) return fail('Unauthorized', 401);
 
-    if (!PUBLIC_KEY || !PRIVATE_KEY) {
-      return fail('VAPID keys belum di-set di env function send-push.');
-    }
+    const body = await req.json();
+    const user_ids: string[] = Array.isArray(body?.user_ids)
+      ? body.user_ids.map(String)
+      : body?.user_id
+        ? [String(body.user_id)]
+        : [];
 
+    // Dukung kirim manual subscription (untuk testing/dev).
     const targets: Array<{ endpoint: string; keys?: { p256dh?: string; auth?: string } | null }> = [];
-    if (subscription?.endpoint) {
-      targets.push(subscription);
-    } else if (user_id) {
+    if (body?.subscription?.endpoint) {
+      targets.push(body.subscription);
+    } else if (user_ids.length) {
       // Akses via RPC security-definer, bukan query langsung — tabel di-lock RLS.
-      const { data, error } = await supabase.rpc('get_push_subscriptions', {
-        p_user_id: user_id,
+      const { data, error } = await supabase.rpc('get_push_subscriptions_for_users', {
+        p_user_ids: user_ids,
       });
       if (error) return fail(String(error.message), 502);
       for (const row of data ?? []) {
         if (row?.subscription?.endpoint) targets.push(row.subscription);
       }
     } else {
-      return fail('Butuh user_id atau subscription.');
+      return fail('Butuh user_id / user_ids.');
     }
 
-    const payload = JSON.stringify({ title: title ?? 'NEXUS', body: body ?? '', url: url ?? '' });
+    const payload = JSON.stringify({ title: body?.title ?? 'NEXUS', body: body?.body ?? '', url: body?.url ?? '' });
     const results = [];
     for (const sub of targets) {
       try {

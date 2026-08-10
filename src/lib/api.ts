@@ -715,6 +715,28 @@ export async function downloadMedia(bucket: string, path: string) {
   return data;
 }
 
+// ---------- AUTO-CLEAN 24 JAM ----------
+// Cek di database: kalau sudah lewat 24 jam, semua data chat/history dihapus
+// otomatis (sisanya hanya data login). return true = data baru saja dibersihkan.
+export async function rpcMaybeCleanup(): Promise<boolean> {
+  const { data, error } = await nxRpc('maybe_cleanup', {});
+  if (error) throw new Error(normalizeErr(error.message));
+  return !!data;
+}
+
+// Hapus seluruh media di bucket chat-media (dipanggil setelah maybe_cleanup true).
+export async function wipeMediaBucket() {
+  try {
+    const { data: list, error } = await supabase.storage.from('chat-media').list('', { limit: 1000 });
+    if (error) throw error;
+    if (list && list.length) {
+      await supabase.storage.from('chat-media').remove(list.map((f) => f.name));
+    }
+  } catch {
+    /* noop */
+  }
+}
+
 export function normalizeErr(msg: string) {
   if (!msg) return 'Terjadi kesalahan';
   if (/unauthorized|akses ditolak|tidak cocok|token (tidak valid|invalid|kadalu|expired)/i.test(msg)) {

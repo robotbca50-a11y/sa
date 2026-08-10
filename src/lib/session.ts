@@ -132,3 +132,15 @@ export function writeMsgCache(key: string, msgs: Msg[]) {
     /* storage penuh */
   }
 }
+
+// Hapus SEMUA cache chat di browser (dipakai auto-clean 24 jam). Data login
+// (nexus:user, nexus:token, fingerprint, dll) tetap disimpan.
+export function clearChatCache() {
+  try {
+    Object.keys(localStorage).forEach((k) => {
+      if (k.startsWith('nexus:cache')) localStorage.removeItem(k);
+    });
+  } catch {
+    /* noop */
+  }
+}
