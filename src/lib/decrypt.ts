@@ -1,5 +1,5 @@
 import { downloadMedia } from './api';
-import { decryptBytes, decryptText, pickEntry } from './crypto';
+import { decryptBytes, decryptText, pickEntry, type PickResult } from './crypto';
 import type { Msg } from '../types';
 
 export type Decoded = {
@@ -17,12 +17,17 @@ export function setDecryptPrivateKey(k: CryptoKey | null) {
   privKey = k;
 }
 
-async function entryFor(key: CryptoKey, msg: Msg) {
+// Hasil dekripsi memakai kunci yang BENAR-BENAR cocok: entri multi-key
+// membawa shared key hasil ECDH-nya sendiri, fallback legacy memakai kunci
+// percakapan yang dihitung pemanggil.
+type Entry = { ct: string; iv: string; key: CryptoKey };
+
+async function entryFor(key: CryptoKey, msg: Msg): Promise<Entry | null> {
   if (privKey) {
-    const multi = await pickEntry(privKey, msg.ciphertexts);
-    if (multi) return multi;
+    const multi: PickResult | null = await pickEntry(privKey, msg.ciphertexts);
+    if (multi) return { ct: multi.ct, iv: multi.iv, key: multi.key };
   }
-  return msg.ciphertext ? { ct: msg.ciphertext, iv: msg.iv ?? '' } : null;
+  return msg.ciphertext ? { ct: msg.ciphertext, iv: msg.iv ?? '', key } : null;
 }
 
 export async function decodeMessage(msg: Msg, key: CryptoKey): Promise<Decoded> {
@@ -31,11 +36,11 @@ export async function decodeMessage(msg: Msg, key: CryptoKey): Promise<Decoded> 
   let out: Decoded;
   const entry = await entryFor(key, msg);
   if (msg.msg_type === 'text' && entry) {
-    const text = await decryptText(key, entry.ct, entry.iv);
+    const text = await decryptText(entry.key, entry.ct, entry.iv);
     out = { text, mediaUrl: null, mediaMime: '' };
   } else if (msg.media_path && entry) {
     const blob = await downloadMedia('chat-media', msg.media_path);
-    const plain = await decryptBytes(key, entry.ct, entry.iv);
+    const plain = await decryptBytes(entry.key, entry.ct, entry.iv);
     const mediaMime = blob.type || 'application/octet-stream';
     const mediaBlob = new Blob([plain], { type: mediaMime });
     out = { text: '', mediaUrl: URL.createObjectURL(mediaBlob), mediaMime };

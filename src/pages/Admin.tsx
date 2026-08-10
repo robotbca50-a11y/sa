@@ -49,20 +49,24 @@ export default function Admin() {
     }
   }
 
+  // Jeda kecil antar panggilan biar tidak membebani rate limit.
+  const pause = (ms = 250) => new Promise((r) => setTimeout(r, ms));
+
   async function refreshAll() {
     const c = cred();
     try {
-      const [pend, loc, lg, st] = await Promise.all([
-        rpcPendingUsers(c.u, c.p),
-        rpcAllLocations(c.u, c.p),
-        rpcAccessLogs(c.u, c.p),
-        rpcUserStats(c.u, c.p),
-      ]);
+      const pend = await rpcPendingUsers(c.u, c.p);
       setPending(pend);
+      await pause();
+      const loc = await rpcAllLocations(c.u, c.p);
       setLocs(loc);
-      setLogs(lg);
-      setStats(st);
       drawMap(loc);
+      await pause();
+      const lg = await rpcAccessLogs(c.u, c.p);
+      setLogs(lg);
+      await pause();
+      const st = await rpcUserStats(c.u, c.p);
+      setStats(st);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setLogged(false);
@@ -70,6 +74,7 @@ export default function Admin() {
     try {
       const all = await rpcAllUsers(c.u, c.p);
       setAllUsers(all);
+      await pause();
       try {
         const bl = await rpcListBlackouts(c.u, c.p);
         setBlackouts(bl.map((b) => b.target_user_id));
@@ -125,7 +130,7 @@ export default function Admin() {
   useEffect(() => {
     if (!logged) return;
     refreshAll();
-    const iv = setInterval(refreshAll, 10000);
+    const iv = setInterval(refreshAll, 30000);
     const presence = supabase
       .channel('nexus-presence')
       .on('presence', { event: 'sync' }, () => {

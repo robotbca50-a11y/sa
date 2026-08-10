@@ -179,10 +179,13 @@ export async function encryptForKeys(
 // Coba semua entri ciphertexts sampai satu berhasil didekripsi. Label entry
 // "senderPub:recipientPub" memberi tahu public key pengirim yang dipakai,
 // sehingga shared key bisa diturunkan dari kunci privat device ini.
+// Mengembalikan entri BESERTA kunci shared yang cocok, agar pemanggil tidak
+// perlu menebak kunci mana yang benar.
+export type PickResult = PerKeyEntry & { key: CryptoKey };
 export async function pickEntry(
   myPrivateKey: CryptoKey,
   entries: CiphertextsMap | null | undefined,
-): Promise<PerKeyEntry | null> {
+): Promise<PickResult | null> {
   if (!entries) return null;
   const sharedCache = new Map<string, CryptoKey>();
   for (const label of Object.keys(entries)) {
@@ -200,7 +203,7 @@ export async function pickEntry(
     }
     try {
       await decryptBytes(shared, e.ct, e.iv ?? '');
-      return e;
+      return { ct: e.ct, iv: e.iv, key: shared };
     } catch {
       /* coba entri berikutnya */
     }

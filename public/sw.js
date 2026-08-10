@@ -7,15 +7,22 @@ self.addEventListener('activate', (e) => {
   e.waitUntil(clients.claim());
 });
 
-// Fetch passthrough (network-first, tanpa cache) — wajib biar PWA installable.
-// Kalau fetch gagal (offline / server lambat), biarkan browser menangani sendiri
-// supaya tidak muncul "Uncaught (in promise) TypeError: Failed to fetch".
+// Hanya tangani navigasi (halaman). Request API/asset dibiarkan lewat langsung
+// ke network supaya error asli (rate limit, dsb.) tetap terlihat oleh app dan
+// ditangani nxRpc — bukan disamarkan jadi 503 "Offline".
 self.addEventListener('fetch', (event) => {
-  event.respondWith(
-    fetch(event.request).catch(() => {
-      return new Response('', { status: 503, statusText: 'Offline' });
-    }),
-  );
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request).catch(() => {
+        return new Response(
+          '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+            '<style>body{background:#05060a;color:#7dd3fc;font-family:monospace;display:grid;place-items:center;height:100vh;margin:0}' +
+            'h1{font-size:1.2rem}</style><h1>NEXUS — tidak ada koneksi</h1>',
+          { status: 503, statusText: 'Offline', headers: { 'Content-Type': 'text/html' } },
+        );
+      }),
+    );
+  }
 });
 
 self.addEventListener('push', (event) => {
