@@ -137,7 +137,7 @@ export default function Auth() {
   }
 
   return (
-    <div className="relative min-h-dvh flex items-center justify-center px-4 scanlines overflow-hidden w-full" style={{ width: '100vw', maxWidth: '100%' }}>
+    <div className="relative min-app-height flex items-center justify-center px-4 scanlines overflow-hidden w-full max-w-full">
       <CyberCanvas density={60} />
       <div className="grid-floor absolute inset-0" />
       <button

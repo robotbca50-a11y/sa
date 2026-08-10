@@ -197,7 +197,7 @@ export default function Admin() {
 
   if (!logged) {
     return (
-      <div className="relative min-h-dvh flex items-center justify-center px-4 scanlines overflow-hidden w-full" style={{ width: '100vw', maxWidth: '100%' }}>
+      <div className="relative min-app-height flex items-center justify-center px-4 scanlines overflow-hidden w-full max-w-full">
         <CyberCanvas density={50} />
         <div className="grid-floor absolute inset-0" />
         <button className="absolute top-5 left-5 z-30 font-mono text-xs text-slate-500 hover:text-neon" onClick={() => setView('landing')}>
@@ -227,7 +227,7 @@ export default function Admin() {
   }
 
   return (
-    <div className="relative min-h-dvh scanlines w-full" style={{ width: '100vw', maxWidth: '100%' }}>
+    <div className="relative min-app-height scanlines w-full max-w-full">
       <CyberCanvas density={30} />
       <div className="relative z-10 max-w-6xl mx-auto px-4 py-5">
         <header className="flex items-center gap-3 mb-5 flex-wrap">

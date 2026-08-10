@@ -68,7 +68,7 @@ export default function InstallBanner() {
           transition={{ duration: 0.25 }}
           className="pt-safe fixed top-0 inset-x-0 z-[60] px-3 flex justify-center pointer-events-none"
         >
-          <div className="pointer-events-auto glass rounded-2xl border border-neon/30 hud-corner shadow-[0_0_30px_rgba(0,240,255,0.15)] w-full max-w-md max-h-[85dvh] overflow-y-auto">
+          <div className="pointer-events-auto glass rounded-2xl border border-neon/30 hud-corner shadow-[0_0_30px_rgba(0,240,255,0.15)] w-full max-w-md max-h-85-app overflow-y-auto">
             <div className="p-4">
               <div className="flex items-start gap-3">
                 <div className="shrink-0 w-10 h-10 rounded-xl bg-neon/10 border border-neon/40 flex items-center justify-center">

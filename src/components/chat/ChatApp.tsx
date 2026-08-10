@@ -1068,7 +1068,7 @@ export default function ChatApp() {
   }, [users]);
 
   return (
-    <div className="relative w-full flex flex-col bg-abyss scanlines overflow-hidden" style={{ height: '100dvh', width: '100vw', maxWidth: '100%' }}>
+    <div className="app-height relative w-full max-w-full flex flex-col bg-abyss scanlines overflow-hidden">
       <CyberBg />
 
       {/* TOP BAR */}

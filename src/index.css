@@ -10,11 +10,42 @@
   --sar: env(safe-area-inset-right);
 }
 
+/* Tinggi app: fallback 100vh dulu, lalu dvh bila didukung (webview lama tidak
+   kenal dvh → tanpa fallback tinggi jadi auto → muncul scrollbar → 100vw jadi
+   lebih lebar dari area tampil dan sisi kanan chat terpotong). */
+.app-height {
+  height: 100vh;
+}
+@supports (height: 100dvh) {
+  .app-height {
+    height: 100dvh;
+  }
+}
+
+.min-app-height {
+  min-height: 100vh;
+}
+@supports (min-height: 100dvh) {
+  .min-app-height {
+    min-height: 100dvh;
+  }
+}
+
+.max-h-85-app {
+  max-height: 85vh;
+}
+@supports (max-height: 85dvh) {
+  .max-h-85-app {
+    max-height: 85dvh;
+  }
+}
+
 html,
 body,
 #root {
   height: 100%;
-  height: 100dvh;
+  height: 100vh;
+  height: 100dvh; /* fallback: browser tanpa dvh memakai 100vh */
 }
 
 html,
@@ -25,7 +56,7 @@ body {
 }
 
 #root {
-  width: 100vw;
+  width: 100%;
   max-width: 100%;
   overflow-x: hidden;
 }
