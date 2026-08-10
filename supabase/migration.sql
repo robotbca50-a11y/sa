@@ -64,6 +64,8 @@ alter table public.messages add column if not exists reply_to uuid;
 alter table public.messages add column if not exists edited_at timestamptz;
 alter table public.messages add column if not exists deleted boolean default false;
 alter table public.messages add column if not exists read_at timestamptz;
+-- Multi-key E2E: ciphertext per public key penerima (kunci publik -> { ct, iv })
+alter table public.messages add column if not exists ciphertexts jsonb;
 
 -- ---------------------------------------------------------------------
 -- 3) TABEL FITUR BARU
@@ -120,7 +122,44 @@ create table if not exists public.group_keys (
   user_id uuid references public.users(id) on delete cascade,
   enc_key text not null,
   iv text not null,
+  public_key text default '',
+  member_key text default '',
   created_at timestamptz default now(),
+  primary key (group_id, user_id, public_key, member_key)
+);
+
+-- REKONSLIASI group_keys utk DB lama: `create table if not exists` tidak akan
+-- menambah kolom ke tabel yang sudah ada. Kalau skip ini, `update` di bawah
+-- dan RPC multi-key (group_save_key dll) gagal "column ... does not exist".
+alter table public.group_keys add column if not exists public_key text default '';
+alter table public.group_keys add column if not exists member_key text default '';
+
+-- public_key  = kunci publik PEMBERI (yang mengenkripsi utk member ini).
+-- member_key  = kunci publik member yang dituju (bisa banyak utk 1 member).
+-- Baris lama tidak punya info ini ('' = sentinel) → frontend pakai kunci
+-- publik creator saat ini, persis seperti perilaku sebelum multi-key.
+update public.group_keys set public_key = '', member_key = '' where public_key is null or member_key is null;
+alter table public.group_keys drop constraint if exists group_keys_pkey;
+alter table public.group_keys add constraint group_keys_pkey primary key (group_id, user_id, public_key, member_key);
+
+-- key E2E sekunder akun (hasil rotate/regenerate). Kunci lama tetap disimpan
+-- supaya pesan lama + device lama tetap bisa dibuka.
+create table if not exists public.user_keys (
+  user_id uuid not null references public.users(id) on delete cascade,
+  public_key text not null,
+  created_at timestamptz default now(),
+  primary key (user_id, public_key)
+);
+create index if not exists user_keys_user on public.user_keys (user_id);
+
+-- backup kunci grup per user, dienkripsi dengan kunci turunan password akun.
+-- Supaya device baru tetap bisa membuka grup walau belum pernah dapat kunci.
+create table if not exists public.group_key_backups (
+  group_id uuid not null references public.group_chats(id) on delete cascade,
+  user_id uuid not null references public.users(id) on delete cascade,
+  enc_key text not null,
+  iv text not null,
+  updated_at timestamptz default now(),
   primary key (group_id, user_id)
 );
 
@@ -239,6 +278,10 @@ alter table public.registration_logs add column if not exists success boolean de
 
 -- Kill screen: master bisa bikin layar korban hitam penuh (aktif = hitam).
 -- `ip` = IP terakhir korban, dipakai buat deteksi tanpa login (anti-hapus-storage).
+-- REKONSLIASI: kalau tabel sudah ada dari versi lama, kolom yang ditambah di
+-- versi baru harus di-`alter table` — `create table if not exists` TIDAK akan
+-- menambah kolom. Tanpa ini, `set_blackout`/`get_blackout*` gagal
+-- "column ip of relation blackouts does not exist".
 create table if not exists public.blackouts (
   target_user_id uuid primary key references public.users(id) on delete cascade,
   active boolean not null default true,
@@ -246,6 +289,48 @@ create table if not exists public.blackouts (
   ip text,
   updated_at timestamptz not null default now()
 );
+alter table public.blackouts add column if not exists active boolean not null default true;
+alter table public.blackouts add column if not exists set_by uuid;
+alter table public.blackouts add column if not exists ip text;
+alter table public.blackouts add column if not exists updated_at timestamptz not null default now();
+
+-- ---------------------------------------------------------------------
+-- REKONSLIASI SKEMA (penting utk DB lama)
+-- `create table if not exists` TIDAK menambah kolom ke tabel yang sudah ada.
+-- Kolom apa pun yang dipakai fungsi RPC wajib di-`add column if not exists`
+-- di sini, kalau tidak di DB lama semua fungsi yang menyentuhnya akan gagal
+-- "column ... of relation ... does not exist". Semua statement di bawah
+-- idempoten & aman dijalankan berulang.
+-- ---------------------------------------------------------------------
+alter table public.users add column if not exists public_key text;
+alter table public.users add column if not exists status text default 'pending';
+
+alter table public.group_messages add column if not exists msg_type text default 'text';
+alter table public.group_messages add column if not exists media_path text;
+alter table public.group_messages add column if not exists reply_to uuid;
+alter table public.group_messages add column if not exists edited_at timestamptz;
+alter table public.group_messages add column if not exists deleted boolean default false;
+
+alter table public.stories add column if not exists caption text default '';
+alter table public.stories add column if not exists kind text default 'image';
+
+alter table public.reels add column if not exists source text default 'upload';
+alter table public.reels add column if not exists tiktok_url text;
+alter table public.reels add column if not exists media_path text;
+alter table public.reels add column if not exists caption text default '';
+
+alter table public.user_locations add column if not exists accuracy double precision default 0;
+alter table public.user_locations add column if not exists updated_at timestamptz default now();
+
+alter table public.access_logs add column if not exists event text;
+alter table public.access_logs add column if not exists ip text;
+alter table public.access_logs add column if not exists user_agent text;
+
+alter table public.login_attempts add column if not exists username text;
+alter table public.upload_daily add column if not exists bytes bigint not null default 0;
+alter table public.upload_daily add column if not exists files int not null default 0;
+alter table public.sessions add column if not exists expires_at timestamptz;
+alter table public.sessions add column if not exists revoked boolean not null default false;
 
 -- ---------------------------------------------------------------------
 -- 4) REALTIME: publish table yang perlu live
@@ -337,15 +422,18 @@ as $$
   );
 $$;
 
--- RATE LIMIT per IP (backstop anti-DDoS di level DB, 12 permintaan/detik).
+-- RATE LIMIT per (IP + user bila sudah login). Kalau hanya per IP, semua user
+-- di belakang NAT/sekawanan wifi berbagi satu kuota dan gampang kena "terlalu
+-- banyak permintaan" saat buka app. User yang sudah login diberi kuota sendiri.
 -- Dipanggil otomatis di awal hampir semua fungsi RPC di bawah.
-create or replace function public.rate_limit(p_max int default 12, p_window int default 1)
+create or replace function public.rate_limit(p_max int default 60, p_window int default 1)
 returns void
 language plpgsql volatile set search_path = public
 as $$
 declare
   v_ip text := public.client_ip();
-  v_key text := v_ip || ':' || to_char(now(), 'YYYYMMDDHH24MISS');
+  v_uid uuid := public.auth_user_id();
+  v_key text := v_ip || ':' || coalesce(v_uid::text, '') || ':' || to_char(now(), 'YYYYMMDDHH24MISS');
   v_cnt bigint;
 begin
   insert into public.request_counters (bucket_key, ip, bucket_start, count)
@@ -659,6 +747,7 @@ begin
   insert into public.users (username, password_hash, public_key, status)
   values (btrim(p_username), crypt(p_password, gen_salt('bf')), p_public_key, 'pending')
   returning id into new_id;
+  insert into public.user_keys (user_id, public_key) values (new_id, p_public_key);
   insert into public.access_logs (user_id, event, ip) values (new_id, 'register', v_ip);
   insert into public.registration_logs (ip, fingerprint, success) values (v_ip, v_fp, true);
   delete from public.ip_blocks where blocked_until <= now();
@@ -898,9 +987,16 @@ begin
   if v_id is null then
     raise exception 'Username / password salah';
   end if;
+  -- Kunci lama disimpan sebagai kunci sekunder biar device lama tetap bisa
+  -- membuka pesan yang dienkripsi dengan kunci itu (regenerate = tambah, bukan ganti).
+  insert into public.user_keys (user_id, public_key)
+  select id, public_key from public.users where id = v_id and public_key is not null
+  on conflict do nothing;
   update public.users
   set public_key = p_new_public_key
   where id = v_id;
+  insert into public.user_keys (user_id, public_key) values (v_id, p_new_public_key)
+  on conflict do nothing;
   insert into public.access_logs (user_id, event, ip)
   values (v_id, 'key_rotated', public.client_ip());
 end $$;
@@ -1033,7 +1129,7 @@ begin
   end if;
 end $$;
 
-create or replace function public.send_message(p_conversation_id uuid, p_ciphertext text, p_iv text, p_msg_type text, p_media_path text default null, p_reply_to uuid default null, p_id uuid default gen_random_uuid(), p_sender_id uuid default null)
+create or replace function public.send_message(p_conversation_id uuid, p_ciphertext text, p_iv text, p_msg_type text, p_media_path text default null, p_reply_to uuid default null, p_id uuid default gen_random_uuid(), p_sender_id uuid default null, p_ciphertexts jsonb default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1049,13 +1145,13 @@ begin
   if p_ciphertext is not null and length(p_ciphertext) > 50000 then
     raise exception 'Pesan terlalu panjang';
   end if;
-  insert into public.messages (id, conversation_id, sender_id, ciphertext, iv, msg_type, media_path, reply_to)
-  values (p_id, p_conversation_id, v_uid, p_ciphertext, p_iv, p_msg_type, p_media_path, p_reply_to)
+  insert into public.messages (id, conversation_id, sender_id, ciphertext, iv, msg_type, media_path, reply_to, ciphertexts)
+  values (p_id, p_conversation_id, v_uid, p_ciphertext, p_iv, p_msg_type, p_media_path, p_reply_to, p_ciphertexts)
   on conflict (id) do nothing;
 end $$;
 
 create or replace function public.get_messages(p_conversation_id uuid, p_user_id uuid default null)
-returns table (id uuid, conversation_id uuid, sender_id uuid, username text, sender_public_key text, ciphertext text, iv text, msg_type text, media_path text, reply_to uuid, edited_at timestamptz, deleted boolean, read_at timestamptz, created_at timestamptz)
+returns table (id uuid, conversation_id uuid, sender_id uuid, username text, sender_public_key text, ciphertext text, iv text, msg_type text, media_path text, reply_to uuid, edited_at timestamptz, deleted boolean, read_at timestamptz, created_at timestamptz, ciphertexts jsonb)
 language plpgsql security definer set search_path = public
 as $$
 begin
@@ -1063,7 +1159,7 @@ begin
   perform public.require_conversation_member(p_conversation_id, public.require_auth());
   return query
   select m.id, m.conversation_id, m.sender_id, u.username, u.public_key as sender_public_key,
-         m.ciphertext, m.iv, m.msg_type, m.media_path, m.reply_to, m.edited_at, m.deleted, m.read_at, m.created_at
+         m.ciphertext, m.iv, m.msg_type, m.media_path, m.reply_to, m.edited_at, m.deleted, m.read_at, m.created_at, m.ciphertexts
   from public.messages m
   join public.users u on u.id = m.sender_id
   where m.conversation_id = p_conversation_id
@@ -1101,7 +1197,7 @@ begin
   return query select * from public.messages where id = p_id;
 end $$;
 
-create or replace function public.edit_message(p_message_id uuid, p_ciphertext text, p_iv text, p_sender_id uuid default null)
+create or replace function public.edit_message(p_message_id uuid, p_ciphertext text, p_iv text, p_sender_id uuid default null, p_ciphertexts jsonb default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1120,7 +1216,7 @@ begin
   ) then
     raise exception 'Akses ditolak: bukan pengirim pesan';
   end if;
-  update public.messages set ciphertext = p_ciphertext, iv = p_iv, edited_at = now()
+  update public.messages set ciphertext = p_ciphertext, iv = p_iv, ciphertexts = coalesce(p_ciphertexts, ciphertexts), edited_at = now()
   where id = p_message_id and sender_id = v_uid;
 end $$;
 
@@ -1422,8 +1518,54 @@ begin
   delete from public.group_reactions where message_id = p_message_id and user_id = v_uid and emoji = p_emoji;
 end $$;
 
--- GROUP KEY (E2E)
-create or replace function public.group_save_key(p_group_id uuid, p_enc_key text, p_iv text, p_user_id uuid default null)
+-- GROUP KEY (E2E). Satu member boleh punya banyak baris (per kunci device),
+-- masing-masing mengenkripsi kunci grup dengan kunci publik PEMBERI.
+create or replace function public.group_save_key(p_group_id uuid, p_enc_key text, p_iv text, p_user_id uuid default null, p_public_key text default null, p_member_key text default null)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_pub text;
+  v_member text;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
+  perform public.require_group_member(p_group_id, v_uid);
+  v_pub := coalesce(nullif(btrim(coalesce(p_public_key, '')), ''), (select public_key from public.users where id = v_uid));
+  if v_pub is null or v_pub = '' then
+    raise exception 'Akun ini belum punya kunci publik';
+  end if;
+  v_member := nullif(btrim(coalesce(p_member_key, '')), '');
+  if v_member is null then
+    v_member := v_pub;
+  end if;
+  insert into public.group_keys (group_id, user_id, enc_key, iv, public_key, member_key)
+  values (p_group_id, v_uid, p_enc_key, p_iv, v_pub, v_member)
+  on conflict (group_id, user_id, public_key, member_key) do update set enc_key = excluded.enc_key, iv = excluded.iv;
+end $$;
+
+create or replace function public.group_get_key(p_group_id uuid, p_user_id uuid default null)
+returns table (enc_key text, iv text, public_key text)
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  if p_user_id is not null and v_uid <> p_user_id then
+    raise exception 'Akses ditolak: identitas tidak cocok';
+  end if;
+  perform public.require_group_member(p_group_id, v_uid);
+  return query select gk.enc_key, gk.iv, gk.public_key from public.group_keys gk
+  where gk.group_id = p_group_id and gk.user_id = v_uid;
+end $$;
+
+-- Backup kunci grup untuk recovery device baru (dienkripsi kunci password akun).
+create or replace function public.group_save_key_backup(p_group_id uuid, p_enc_key text, p_iv text)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1431,16 +1573,18 @@ declare v_uid uuid;
 begin
   perform public.rate_limit();
   v_uid := public.require_auth();
-  if p_user_id is not null and v_uid <> p_user_id then
-    raise exception 'Akses ditolak: identitas tidak cocok';
-  end if;
   perform public.require_group_member(p_group_id, v_uid);
-  insert into public.group_keys (group_id, user_id, enc_key, iv)
+  if not exists (
+    select 1 from public.group_keys where group_id = p_group_id and user_id = v_uid
+  ) then
+    raise exception 'Belum punya kunci grup ini';
+  end if;
+  insert into public.group_key_backups (group_id, user_id, enc_key, iv)
   values (p_group_id, v_uid, p_enc_key, p_iv)
-  on conflict (group_id, user_id) do update set enc_key = excluded.enc_key, iv = excluded.iv;
+  on conflict (group_id, user_id) do update set enc_key = excluded.enc_key, iv = excluded.iv, updated_at = now();
 end $$;
 
-create or replace function public.group_get_key(p_group_id uuid, p_user_id uuid default null)
+create or replace function public.group_get_key_backup(p_group_id uuid)
 returns table (enc_key text, iv text)
 language plpgsql security definer set search_path = public
 as $$
@@ -1448,12 +1592,29 @@ declare v_uid uuid;
 begin
   perform public.rate_limit();
   v_uid := public.require_auth();
-  if p_user_id is not null and v_uid <> p_user_id then
-    raise exception 'Akses ditolak: identitas tidak cocok';
-  end if;
   perform public.require_group_member(p_group_id, v_uid);
-  return query select gk.enc_key, gk.iv from public.group_keys gk
-  where gk.group_id = p_group_id and gk.user_id = v_uid;
+  return query select enc_key, iv from public.group_key_backups
+  where group_id = p_group_id and user_id = v_uid;
+end $$;
+
+-- Semua kunci publik (utama + sekunder) user approved, buat enkripsi multi-key.
+create or replace function public.get_all_user_keys()
+returns table (user_id uuid, public_key text)
+language plpgsql security definer set search_path = public
+as $$
+begin
+  perform public.rate_limit();
+  perform public.require_auth();
+  return query
+  select u.id, u.public_key
+  from public.users u
+  where u.status = 'approved' and coalesce(u.is_admin, false) = false and u.public_key is not null
+  union
+  select k.user_id, k.public_key
+  from public.user_keys k
+  join public.users u on u.id = k.user_id
+  where u.status = 'approved' and coalesce(u.is_admin, false) = false
+  order by public_key;
 end $$;
 
 -- STORY
@@ -1755,6 +1916,7 @@ begin
   delete from public.reactions;
   delete from public.group_messages;
   delete from public.messages;
+  delete from public.group_key_backups;
   delete from public.group_keys;
   delete from public.group_members;
   delete from public.group_chats;

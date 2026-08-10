@@ -32,6 +32,7 @@ export type Msg = {
   sender_public_key?: string | null;
   ciphertext: string;
   iv?: string | null;
+  ciphertexts?: Record<string, { ct: string; iv: string }> | null;
   msg_type: 'text' | 'image' | 'video' | 'gif' | 'voice';
   media_path?: string | null;
   reply_to?: string | null;

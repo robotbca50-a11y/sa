@@ -350,6 +350,7 @@ export async function rpcSendMessage(p: {
   path?: string | null;
   replyTo?: string | null;
   id?: string | null;
+  cts?: Record<string, { ct: string; iv: string }> | null;
 }) {
   try {
     const { error } = await nxRpc('send_message', {
@@ -361,6 +362,7 @@ export async function rpcSendMessage(p: {
       p_media_path: p.path ?? null,
       p_reply_to: p.replyTo ?? null,
       p_id: p.id ?? undefined,
+      p_ciphertexts: p.cts ?? null,
     });
     if (error) throw new Error(normalizeErr(error.message));
   } catch (e) {
@@ -404,12 +406,19 @@ export async function rpcGetMessage(id: string, userId?: string | null): Promise
   return (data as unknown as Msg[])?.[0] ?? null;
 }
 
-export async function rpcEditMessage(id: string, sender: string, ct: string, iv: string) {
+export async function rpcEditMessage(
+  id: string,
+  sender: string,
+  ct: string,
+  iv: string,
+  cts?: Record<string, { ct: string; iv: string }> | null,
+) {
   const { error } = await nxRpc('edit_message', {
     p_message_id: id,
     p_sender_id: sender,
     p_ciphertext: ct,
     p_iv: iv,
+    p_ciphertexts: cts ?? null,
   });
   if (error) throw new Error(normalizeErr(error.message));
 }
@@ -565,23 +574,64 @@ export async function rpcGroupRemoveReaction(messageId: string, userId: string, 
 }
 
 // ---------- GROUP KEY (E2E grup) ----------
-export async function rpcSaveGroupKey(groupId: string, userId: string, encKey: string, iv: string) {
+// publicKey: kunci publik PEMBERI (saver). memberKey: kunci publik member yang dituju.
+// Null = pakai kunci utama akun si pemanggil.
+export async function rpcSaveGroupKey(
+  groupId: string,
+  userId: string,
+  encKey: string,
+  iv: string,
+  publicKey?: string | null,
+  memberKey?: string | null,
+) {
   const { error } = await nxRpc('group_save_key', {
     p_group_id: groupId,
     p_user_id: userId,
+    p_enc_key: encKey,
+    p_iv: iv,
+    p_public_key: publicKey ?? null,
+    p_member_key: memberKey ?? null,
+  });
+  if (error) throw new Error(normalizeErr(error.message));
+}
+
+export async function rpcGetGroupKey(
+  groupId: string,
+  userId: string,
+): Promise<{ enc_key: string; iv: string; public_key: string | null }[] | null> {
+  const { data, error } = await nxRpc('group_get_key', {
+    p_group_id: groupId,
+    p_user_id: userId,
+  });
+  if (error) throw new Error(normalizeErr(error.message));
+  return (data as unknown as { enc_key: string; iv: string; public_key: string | null }[]) ?? null;
+}
+
+// Backup kunci grup (recovery device baru), dienkripsi kunci password akun.
+export async function rpcSaveGroupKeyBackup(groupId: string, encKey: string, iv: string) {
+  const { error } = await nxRpc('group_save_key_backup', {
+    p_group_id: groupId,
     p_enc_key: encKey,
     p_iv: iv,
   });
   if (error) throw new Error(normalizeErr(error.message));
 }
 
-export async function rpcGetGroupKey(groupId: string, userId: string): Promise<{ enc_key: string; iv: string } | null> {
-  const { data, error } = await nxRpc('group_get_key', {
+export async function rpcGetGroupKeyBackup(
+  groupId: string,
+): Promise<{ enc_key: string; iv: string } | null> {
+  const { data, error } = await nxRpc('group_get_key_backup', {
     p_group_id: groupId,
-    p_user_id: userId,
   });
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as { enc_key: string; iv: string }[])?.[0] ?? null;
+}
+
+// Semua kunci publik (utama + sekunder) user approved untuk enkripsi multi-key.
+export async function rpcGetAllUserKeys(): Promise<{ user_id: string; public_key: string }[]> {
+  const { data, error } = await nxRpc('get_all_user_keys');
+  if (error) throw new Error(normalizeErr(error.message));
+  return (data as unknown as { user_id: string; public_key: string }[]) ?? [];
 }
 
 // ---------- STORY ----------

@@ -117,6 +117,97 @@ export async function decryptFromSender(
   return decryptText(shared, ciphertextB64, ivB64);
 }
 
+export type PerKeyEntry = { ct: string; iv: string };
+export type CiphertextsMap = Record<string, PerKeyEntry>;
+
+// Kunci turunan dari password akun — dipakai menyandikan backup kunci grup.
+export async function derivePasswordKey(password: string, username: string): Promise<CryptoKey> {
+  const salt = new TextEncoder().encode(`nexus:${username.toLowerCase()}`);
+  const base = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    'PBKDF2',
+    false,
+    ['deriveKey'],
+  );
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    base,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+let passwordKeyCache: CryptoKey | null = null;
+export function setPasswordKey(k: CryptoKey | null) {
+  passwordKeyCache = k;
+}
+export function getPasswordKey(): CryptoKey | null {
+  return passwordKeyCache;
+}
+
+// Enkripsi pesan untuk semua kunci publik penerima (multi-key E2E).
+// Entry dikunci sebagai "<public key pengirim>:<public key penerima>" karena
+// ECDH simetris: penerima cukup menghitung shared key dari kunci privatnya dan
+// public key pengirim yang tertera di label entry.
+export async function encryptForKeys(
+  myPrivateKey: CryptoKey,
+  myPublicKey: string,
+  recipientPublicKeys: string[],
+  data: string | Uint8Array,
+): Promise<CiphertextsMap> {
+  const map: CiphertextsMap = {};
+  const seen = new Set<string>();
+  for (const rk of recipientPublicKeys) {
+    if (!rk || seen.has(rk)) continue;
+    seen.add(rk);
+    try {
+      const shared = await deriveSharedKey(myPrivateKey, rk);
+      const enc =
+        data instanceof Uint8Array
+          ? await encryptBytes(shared, data as unknown as BufferSource)
+          : await encryptText(shared, data);
+      map[`${myPublicKey}:${rk}`] = { ct: enc.ciphertext, iv: enc.iv };
+    } catch {
+      /* kunci publik tidak valid — lewati */
+    }
+  }
+  return map;
+}
+
+// Coba semua entri ciphertexts sampai satu berhasil didekripsi. Label entry
+// "senderPub:recipientPub" memberi tahu public key pengirim yang dipakai,
+// sehingga shared key bisa diturunkan dari kunci privat device ini.
+export async function pickEntry(
+  myPrivateKey: CryptoKey,
+  entries: CiphertextsMap | null | undefined,
+): Promise<PerKeyEntry | null> {
+  if (!entries) return null;
+  const sharedCache = new Map<string, CryptoKey>();
+  for (const label of Object.keys(entries)) {
+    const e = entries[label];
+    if (!e?.ct) continue;
+    const senderPub = label.split(':')[0] || label;
+    let shared = sharedCache.get(senderPub);
+    if (!shared) {
+      try {
+        shared = await deriveSharedKey(myPrivateKey, senderPub);
+      } catch {
+        continue;
+      }
+      sharedCache.set(senderPub, shared);
+    }
+    try {
+      await decryptBytes(shared, e.ct, e.iv ?? '');
+      return e;
+    } catch {
+      /* coba entri berikutnya */
+    }
+  }
+  return null;
+}
+
 export function sha256(text: string): Promise<string> {
   return crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)).then((h) =>
     bufToB64(h).replace(/[+/=]/g, '').slice(0, 14),

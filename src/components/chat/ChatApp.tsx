@@ -11,18 +11,20 @@ import {
   rpcAddReaction, rpcRemoveReaction, rpcGroupAddReaction, rpcGroupRemoveReaction,
   rpcEditMessage, rpcDeleteMessage, rpcGroupEditMessage, rpcGroupDeleteMessage,
   rpcGroupCreate, rpcGroupAddMember, rpcGroupMembers, rpcGetGroupKey, rpcSaveGroupKey,
+  rpcSaveGroupKeyBackup, rpcGetGroupKeyBackup, rpcGetAllUserKeys,
   rpcMarkMessagesRead, rpcMarkGroupMessagesRead,
   rpcLogout, rpcLogAccess, uploadMedia, toastErr,
   rpcMaybeCleanup, wipeMediaBucket,
 } from '../../lib/api';
 import {
   deriveSharedKey, encryptText, decryptText, randomAESKey, exportAESKey, encryptToRecipient,
-  decryptFromSender, importAESKey, bufToB64,
+  decryptFromSender, importAESKey, bufToB64, encryptForKeys, getPasswordKey,
+  exportPublicRaw,
 } from '../../lib/crypto';
 import { initPresence, stopPresence } from '../../lib/realtime';
 import { subscribeMessages, subscribeGroupMessages, subscribeReactions, subscribeGroupReactions, onTyping, onCall } from '../../lib/realtime';
 import { initNotifications, ensurePush, unsubscribePush, appNotify, updateTitle, triggerPush } from '../../lib/notify';
-import { decodeMessage, evictCache, clearCache } from '../../lib/decrypt';
+import { decodeMessage, evictCache, clearCache, setDecryptPrivateKey } from '../../lib/decrypt';
 import { clearSession, readMsgCache, writeMsgCache, clearChatCache } from '../../lib/session';
 import Conversation from '../chat/Conversation';
 import ConversationList from '../chat/ConversationList';
@@ -107,6 +109,7 @@ export default function ChatApp() {
   const msgMapRef = useRef(msgMap);
   const keyMapRef = useRef(keyMap);
   const userMapRef = useRef<Record<string, string>>({});
+  const userKeysRef = useRef<Record<string, string[]>>({});
   const inCallRef = useRef(false);
 
   meRef.current = me;
@@ -117,6 +120,10 @@ export default function ChatApp() {
   msgMapRef.current = msgMap;
   keyMapRef.current = keyMap;
   userMapRef.current = Object.fromEntries(users.map((u) => [u.id, u.username]));
+
+  useEffect(() => {
+    setDecryptPrivateKey(privateKey ?? null);
+  }, [privateKey]);
 
   // ---------- LOAD ----------
   useEffect(() => {
@@ -158,8 +165,13 @@ export default function ChatApp() {
       );
     }
 
-    Promise.all([rpcListUsers(), rpcMyConversations(me.id), rpcMyGroups(me.id)])
-      .then(([us, cv, gr]) => {
+    Promise.all([rpcListUsers(), rpcMyConversations(me.id), rpcMyGroups(me.id), rpcGetAllUserKeys()])
+      .then(([us, cv, gr, keys]) => {
+        const keyMapById: Record<string, string[]> = {};
+        for (const k of keys ?? []) {
+          (keyMapById[k.user_id] ??= []).push(k.public_key);
+        }
+        userKeysRef.current = keyMapById;
         setUsers(us);
         setGroups(gr);
         writeCache(`nexus:cache:${me.id}`, { users: us, dms: cv }, 5 * 60 * 1000);
@@ -516,19 +528,65 @@ export default function ChatApp() {
     if (!groupMembers[gid]) setGroupMembers((m) => ({ ...m, [gid]: members }));
 
     if (!keyMapRef.current[key]) {
+      let groupKey: CryptoKey | null = null;
       try {
-        const mine = await rpcGetGroupKey(gid, me!.id);
-        if (mine) {
+        const rows = await rpcGetGroupKey(gid, me!.id);
+        if (rows?.length && keyRef.current) {
           const creator = members.find((u) => u.id === groupsRef.current.find((g) => g.id === gid)?.created_by);
-          if (creator?.public_key && keyRef.current) {
-            const raw = await decryptFromSender(keyRef.current, creator.public_key, mine.enc_key, mine.iv);
-            const k = await importAESKey(raw);
-            keyMapRef.current[key] = k;
-            setKeyMap({ ...keyMapRef.current });
+          for (const row of rows) {
+            const saver = row.public_key ? row.public_key : creator?.public_key;
+            if (!saver) continue;
+            try {
+              const raw = await decryptFromSender(keyRef.current, saver, row.enc_key, row.iv);
+              groupKey = await importAESKey(raw);
+              break;
+            } catch {
+              /* coba baris berikutnya */
+            }
           }
         }
       } catch {
         /* key gagal dibuka */
+      }
+
+      // Device baru: belum punya entri kunci grup → pulihkan lewat backup password.
+      if (!groupKey && me) {
+        try {
+          const pkey = getPasswordKey();
+          const bk = pkey ? await rpcGetGroupKeyBackup(gid).catch(() => null) : null;
+          if (bk) {
+            const raw = await decryptText(pkey!, bk.enc_key, bk.iv);
+            groupKey = await importAESKey(raw);
+          }
+        } catch {
+          /* backup gagal */
+        }
+      }
+
+      if (groupKey) {
+        keyMapRef.current[key] = groupKey;
+        setKeyMap({ ...keyMapRef.current });
+        // Simpan self-entry utk device ini + segarkan backup (best-effort).
+        if (keyRef.current && me) {
+          try {
+            const myPub = await exportPublicRaw(keyRef.current);
+            const raw = await exportAESKey(groupKey);
+            const self = await encryptToRecipient(keyRef.current, myPub, raw);
+            await rpcSaveGroupKey(gid, me.id, self.ciphertext, self.iv, myPub, myPub);
+          } catch {
+            /* noop */
+          }
+          try {
+            const pkey = getPasswordKey();
+            if (pkey) {
+              const raw = await exportAESKey(groupKey);
+              const enc = await encryptText(pkey, raw);
+              await rpcSaveGroupKeyBackup(gid, enc.ciphertext, enc.iv);
+            }
+          } catch {
+            /* noop */
+          }
+        }
       }
     }
 
@@ -539,6 +597,29 @@ export default function ChatApp() {
   }
 
   // ---------- SEND ----------
+  // Semua public key milik user ini (utama + sekunder) untuk enkripsi multi-key.
+  function peerKeys(userId: string, fallback?: string | null): string[] {
+    const keys = userKeysRef.current[userId] ?? [];
+    const set = new Set(keys);
+    if (fallback) set.add(fallback);
+    return Array.from(set).filter(Boolean);
+  }
+
+  async function dmCiphertexts(
+    text: string | Uint8Array,
+    peerId: string,
+    peerPub?: string | null,
+  ): Promise<Record<string, { ct: string; iv: string }> | undefined> {
+    if (!privateKey) return undefined;
+    const myPub = await exportPublicRaw(privateKey).catch(() => '');
+    if (!myPub) return undefined;
+    const recipients = [
+      ...peerKeys(peerId, peerPub),
+      ...peerKeys(me?.id ?? '', me?.public_key),
+    ];
+    return encryptForKeys(privateKey, myPub, recipients, text).catch(() => undefined);
+  }
+
   function patchLocalMsg(key: string, id: string, patch: Partial<Msg>) {
     const list = msgMapRef.current[key] ?? [];
     const idx = list.findIndex((x) => x.id === id);
@@ -585,6 +666,7 @@ export default function ChatApp() {
             path: m.media_path ?? null,
             replyTo: m.reply_to ?? null,
             id: m.id,
+            cts: m.ciphertexts ?? null,
           }),
         );
       } else {
@@ -619,6 +701,12 @@ export default function ChatApp() {
     });
     if (!enc) return;
     const { ciphertext, iv } = enc;
+    const peer = dmsRef.current.find((d) => d.key === a.key)?.peerId;
+    const peerUser = users.find((u) => u.id === peer);
+    const cts =
+      a.kind === 'dm'
+        ? await dmCiphertexts(text, peer ?? '', peerUser?.public_key)
+        : undefined;
     const localId = crypto.randomUUID();
     const localMsg: Msg = {
       id: localId,
@@ -628,6 +716,7 @@ export default function ChatApp() {
       username: me!.username,
       ciphertext,
       iv,
+      ciphertexts: cts,
       msg_type: 'text',
       reply_to: replyTo ?? null,
       deleted: false,
@@ -647,6 +736,7 @@ export default function ChatApp() {
             type: 'text',
             replyTo,
             id: localId,
+            cts,
           }),
         );
       } else {
@@ -699,6 +789,12 @@ export default function ChatApp() {
       await uploadMedia('chat-media', path, new Blob([encrypted], { type: file.type }), me?.id ?? null);
       const ivB64 = bufToB64(iv);
       const ctB64 = bufToB64(encrypted);
+      const peer = dmsRef.current.find((d) => d.key === a.key)?.peerId;
+      const peerUser = users.find((u) => u.id === peer);
+      const cts =
+        a.kind === 'dm'
+          ? await dmCiphertexts(new Uint8Array(buf), peer ?? '', peerUser?.public_key)
+          : undefined;
       const localId = crypto.randomUUID();
       const localMsg: Msg = {
         id: localId,
@@ -708,6 +804,7 @@ export default function ChatApp() {
         username: me!.username,
         ciphertext: ctB64,
         iv: ivB64,
+        ciphertexts: cts,
         msg_type: type,
         media_path: path,
         reply_to: replyTo ?? null,
@@ -728,6 +825,7 @@ export default function ChatApp() {
               path,
               replyTo,
               id: localId,
+              cts,
             }),
           );
         } else {
@@ -784,8 +882,14 @@ export default function ChatApp() {
     if (!k) return;
     try {
       const { ciphertext, iv } = await encryptText(k, newText);
-      if (a.kind === 'dm') await rpcEditMessage(msgId, me!.id, ciphertext, iv);
-      else await rpcGroupEditMessage(msgId, me!.id, ciphertext, iv);
+      if (a.kind === 'dm') {
+        const peer = dmsRef.current.find((d) => d.key === a.key)?.peerId;
+        const peerUser = users.find((u) => u.id === peer);
+        const cts = await dmCiphertexts(newText, peer ?? '', peerUser?.public_key);
+        await rpcEditMessage(msgId, me!.id, ciphertext, iv, cts);
+      } else {
+        await rpcGroupEditMessage(msgId, me!.id, ciphertext, iv);
+      }
       evictCache(msgId);
       refetchActive();
     } catch (e) {
@@ -836,13 +940,28 @@ export default function ChatApp() {
       const groupKey = await randomAESKey();
       const rawKey = await exportAESKey(groupKey);
       const all = [me, ...users.filter((u) => memberIds.includes(u.id))];
+      const myPub = await exportPublicRaw(privateKey).catch(() => '');
       await Promise.all(
         all.map(async (u) => {
           if (!u.public_key) return;
-          const { ciphertext, iv } = await encryptToRecipient(privateKey, u.public_key, rawKey);
-          await rpcSaveGroupKey(gid, u.id, ciphertext, iv);
+          const memberKeys = peerKeys(u.id, u.public_key);
+          await Promise.all(
+            memberKeys.map(async (mk) => {
+              const { ciphertext, iv } = await encryptToRecipient(privateKey, mk, rawKey);
+              await rpcSaveGroupKey(gid, u.id, ciphertext, iv, myPub, mk);
+            }),
+          );
         }),
       );
+      // Backup kunci grup utk creator (recovery device baru).
+      if (myPub && getPasswordKey()) {
+        try {
+          const enc = await encryptText(getPasswordKey()!, rawKey);
+          await rpcSaveGroupKeyBackup(gid, enc.ciphertext, enc.iv);
+        } catch {
+          /* noop */
+        }
+      }
       keyMapRef.current[GRK(gid)] = groupKey;
       setKeyMap({ ...keyMapRef.current });
       const g: Group = { id: gid, name, created_by: me.id, created_at: new Date().toISOString() };
@@ -860,10 +979,16 @@ export default function ChatApp() {
     try {
       await rpcGroupAddMember(gid, uid);
       const u = users.find((x) => x.id === uid);
-      if (u?.public_key) {
+      const myPub = await exportPublicRaw(privateKey).catch(() => '');
+      if (u?.public_key && myPub) {
         const raw = await exportAESKey(k);
-        const { ciphertext, iv } = await encryptToRecipient(privateKey, u.public_key, raw);
-        await rpcSaveGroupKey(gid, uid, ciphertext, iv);
+        const memberKeys = peerKeys(uid, u.public_key);
+        await Promise.all(
+          memberKeys.map(async (mk) => {
+            const { ciphertext, iv } = await encryptToRecipient(privateKey, mk, raw);
+            await rpcSaveGroupKey(gid, uid, ciphertext, iv, myPub, mk);
+          }),
+        );
       }
       const members = await rpcGroupMembers(gid);
       setGroupMembers((m) => ({ ...m, [gid]: members }));

@@ -4,9 +4,9 @@ import { Eye, EyeOff, KeyRound, UserPlus, LogIn, Wrench } from 'lucide-react';
 import CyberCanvas from '../components/CyberCanvas';
 import NeonButton from '../components/NeonButton';
 import { useStore } from '../lib/store';
-import { generateKeyPair, exportPublicRaw } from '../lib/crypto';
+import { generateKeyPair, exportPublicRaw, derivePasswordKey, setPasswordKey } from '../lib/crypto';
 import { savePrivateKey, loadPrivateKey, importPrivateKeyB64 } from '../lib/keystore';
-import { rpcRegister, rpcLogin, rpcLogAccess, rpcUpdatePublicKey, getClientIp } from '../lib/api';
+import { rpcRegister, rpcLogin, rpcLogAccess, rpcUpdatePublicKey, rpcGetAllUserKeys, getClientIp } from '../lib/api';
 import { loadSession, saveSession, touchSession } from '../lib/session';
 import type { User } from '../types';
 export { loadSession, saveSession };
@@ -43,6 +43,7 @@ export default function Auth() {
     }
     try {
       await importPrivateKeyB64(impKey, username.trim());
+      setPasswordKey(await derivePasswordKey(password, username.trim()));
       setImpKey('');
       setImpStatus('Kunci berhasil diimpor. Silakan login dengan username kamu. 🔓');
       setMismatch(null);
@@ -57,6 +58,7 @@ export default function Auth() {
     try {
       const { privateKey, publicKeyBase64 } = await generateKeyPair();
       await savePrivateKey(privateKey, username.trim());
+      setPasswordKey(await derivePasswordKey(password, username.trim()));
       await rpcUpdatePublicKey(username.trim(), password, publicKeyBase64);
       const user = await rpcLogin(username.trim(), password);
       saveSession(user);
@@ -90,6 +92,7 @@ export default function Auth() {
       if (mode === 'register') {
         const { privateKey, publicKeyBase64 } = await generateKeyPair();
         await savePrivateKey(privateKey, username.trim());
+        setPasswordKey(await derivePasswordKey(password, username.trim()));
         const ip = await getClientIp();
         await rpcRegister(username.trim(), password, publicKeyBase64, ip);
         setStatus('Akun dibuat. Tunggu persetujuan dulu sebelum bisa login. 🔐');
@@ -100,16 +103,22 @@ export default function Auth() {
           setStatus('Kunci E2E tidak ada di device ini. Impor kunci dari device lama dulu (bagian bawah), atau login dari device yang sama saat daftar.');
           return;
         }
+        setPasswordKey(await derivePasswordKey(password, username.trim()));
         const derived = await exportPublicRaw(key).catch(() => '');
-        if (derived && derived !== user.public_key) {
-          setMismatch(user);
-          setMismatchPub(derived);
-          setStatus(
-            '⚠️ Kunci E2E di device ini TIDAK cocok dengan akun "' + user.username + '". ' +
-            'Penyebab paling umum: dua akun didaftarkan di browser yang sama (kunci yang lama ketimpa). ' +
-            'Pilih salah satu di bawah ini untuk memperbaiki.',
-          );
-          return;
+        if (derived) {
+          // Multi-key: kunci lama tetap sah selama masih terdaftar di user_keys.
+          const allKeys = await rpcGetAllUserKeys().catch(() => []);
+          const mine = allKeys.filter((k) => k.user_id === user.id).map((k) => k.public_key);
+          if (!mine.includes(derived)) {
+            setMismatch(user);
+            setMismatchPub(derived);
+            setStatus(
+              '⚠️ Kunci E2E di device ini TIDAK cocok dengan akun "' + user.username + '". ' +
+              'Penyebab paling umum: dua akun didaftarkan di browser yang sama (kunci yang lama ketimpa). ' +
+              'Pilih salah satu di bawah ini untuk memperbaiki.',
+            );
+            return;
+          }
         }
         setMismatch(null);
         saveSession(user);
@@ -223,9 +232,10 @@ export default function Auth() {
               </button>
             </div>
             <div className="text-[10px] font-mono text-slate-500 leading-relaxed">
-              Regenerasi akan membuat kunci baru dan memperbarui kunci publik akun di server. Chat lama yang
-              terkirim dengan kunci lama tidak bisa dibaca lagi (kena tombol 🔒), chat baru berjalan normal.
-              Butuh fungsi <span className="text-slate-300">update_public_key</span> → jalankan
+              Regenerasi akan membuat kunci baru, sedangkan kunci lama disimpan server sebagai kunci sekunder —
+              pesan lama tetap terbaca di device lama, dan pesan baru terbaca di semua device. Impor dianjurkan
+              kalau device lama masih aktif dan kamu ingin dua device berjalan bersamaan. Butuh fungsi
+              <span className="text-slate-300"> update_public_key</span> → jalankan
               <span className="text-slate-300"> supabase/migration.sql</span> sekali di SQL Editor.
             </div>
           </div>
