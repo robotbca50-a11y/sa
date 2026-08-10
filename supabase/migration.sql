@@ -1798,6 +1798,21 @@ begin
   end loop;
 end $$;
 
+-- Bersihkan state lama dari versi sebelumnya: user_locations TIDAK boleh lagi
+-- dipublish / dibuka policy realtime-nya (privasi koordinat; peta admin polling).
+-- Kalau tidak dihapus eksplisit, objek yang sudah ada akan tetap bertahan.
+do $$
+begin
+  if exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public' and tablename = 'user_locations'
+  ) then
+    alter publication supabase_realtime drop table public.user_locations;
+  end if;
+end $$;
+drop policy if exists "realtime_read" on public.user_locations;
+
 -- Realtime (supabase_realtime / postgres_changes) MENGIKUTI RLS. Policy deny-all
 -- "rpc_only" tadi membuat event INSERT/UPDATE/DELETE TIDAK pernah sampai ke
 -- client → pesan telat/gagal muncul live. Maka kita buka policy SELECT khusus
