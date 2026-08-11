@@ -120,7 +120,14 @@ Deno.serve(async (req) => {
         await webpush.sendNotification(sub, payload);
         results.push({ ok: true, endpoint: sub.endpoint.slice(0, 40) });
       } catch (e) {
-        results.push({ ok: false, endpoint: sub.endpoint.slice(0, 40), err: String(e) });
+        const err = e as { statusCode?: number; message?: string };
+        const msg = String(err?.message ?? e);
+        // Subscription sudah mati (FCM 404/410) — hapus dari DB biar tidak
+        // menumpuk dan tidak bikin send berikutnya selalu melaporkan gagal.
+        if (err?.statusCode === 404 || err?.statusCode === 410 || /not found|gone/i.test(msg)) {
+          await rpc('cleanup_push_subscription', { p_endpoint: sub.endpoint }, token).catch(() => {});
+        }
+        results.push({ ok: false, endpoint: sub.endpoint.slice(0, 40), err: msg });
       }
     }
 

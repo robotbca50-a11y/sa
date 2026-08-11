@@ -403,7 +403,7 @@ begin
         'get_my_stories','view_story','get_story_views','delete_story','reel_add','get_reels',
         'delete_reel','upsert_location','log_access','set_blackout','get_blackout','get_blackout_public','list_blackouts',
         'get_blackout_ip','get_push_subscriptions','get_push_subscriptions_for_users','assert_media_path',
-        'save_push_subscription','delete_push_subscription','maybe_cleanup'
+        'save_push_subscription','delete_push_subscription','cleanup_push_subscription','maybe_cleanup'
       )
   loop
     execute format('drop function if exists %s cascade', r.sig);
@@ -1885,6 +1885,45 @@ begin
   if p_endpoint is null or p_endpoint = '' then return; end if;
   delete from public.push_subscriptions
   where user_id = v_uid and subscription ->> 'endpoint' = p_endpoint;
+end $$;
+
+-- Edge function memanggil ini saat push service balas 404/410 (endpoint mati),
+-- biar subscription basi tidak menumpuk. Boleh dihapus oleh pemiliknya sendiri
+-- atau user yang masih berhubungan (satu DM / satu grup) dengannya.
+create or replace function public.cleanup_push_subscription(p_endpoint text)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_target uuid;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  if p_endpoint is null or p_endpoint = '' then
+    return;
+  end if;
+  select user_id into v_target
+  from public.push_subscriptions
+  where subscription ->> 'endpoint' = p_endpoint;
+  if v_target is null then
+    return;
+  end if;
+  if v_target = v_uid then
+    delete from public.push_subscriptions where subscription ->> 'endpoint' = p_endpoint;
+    return;
+  end if;
+  if exists (
+    select 1 from public.conversations c
+    where (c.user_a = v_uid and c.user_b = v_target)
+       or (c.user_a = v_target and c.user_b = v_uid)
+  ) or exists (
+    select 1 from public.group_members a
+    join public.group_members b on a.group_id = b.group_id
+    where a.user_id = v_uid and b.user_id = v_target
+  ) then
+    delete from public.push_subscriptions where subscription ->> 'endpoint' = p_endpoint;
+  end if;
 end $$;
 
 -- ---------------------------------------------------------------------
