@@ -28,7 +28,8 @@ import { decodeMessage, evictCache, clearCache, setDecryptPrivateKey } from '../
 import { clearSession, readMsgCache, writeMsgCache, clearChatCache } from '../../lib/session';
 import Conversation from '../chat/Conversation';
 import ConversationList from '../chat/ConversationList';
-import { NewChatModal, NewGroupModal, AddMemberModal, GhostSettingsModal } from '../chat/modals';
+import { NewChatModal, NewGroupModal, AddMemberModal, GhostSettingsModal, ProfileModal } from '../chat/modals';
+import Avatar, { avatarUrl } from '../Avatar';
 import Stories from '../features/Stories';
 import Reels from '../features/Reels';
 import WatchParty from '../features/WatchParty';
@@ -97,7 +98,7 @@ export default function ChatApp() {
   const [reactMap, setReactMap] = useState<Record<string, Reaction[]>>({});
   const [typing, setTyping] = useState<Record<string, string[]>>({});
   const [tab, setTab] = useState<'chats' | 'reels' | 'watch'>('chats');
-  const [modal, setModal] = useState<null | 'newchat' | 'newgroup' | 'ghost'>(null);
+  const [modal, setModal] = useState<null | 'newchat' | 'newgroup' | 'ghost' | 'profile'>(null);
   const [addMemberFor, setAddMemberFor] = useState<string | null>(null);
   const [groupMembers, setGroupMembers] = useState<Record<string, User[]>>({});
   const [call, setCall] = useState<{ mode: 'caller' | 'callee'; peer: User } | null>(null);
@@ -165,6 +166,7 @@ export default function ChatApp() {
           peerId: r.peer_id,
           name: r.peer_username ?? 'unknown',
           public_key: r.peer_public_key,
+          avatar: r.peer_avatar,
           online: false,
           lastAt: r.last_at,
           lastType: r.last_type,
@@ -192,6 +194,7 @@ export default function ChatApp() {
           peerId: r.peer_id,
           name: r.peer_username ?? 'unknown',
           public_key: r.peer_public_key,
+          avatar: r.peer_avatar,
           online: false,
           lastAt: r.last_at,
           lastType: r.last_type,
@@ -291,6 +294,7 @@ export default function ChatApp() {
           peerId: r.peer_id,
           name: r.peer_username ?? 'unknown',
           public_key: r.peer_public_key,
+          avatar: r.peer_avatar,
           online: false,
           lastAt: r.last_at,
           lastType: r.last_type,
@@ -1091,6 +1095,13 @@ export default function ChatApp() {
 
         <div className="flex items-center gap-1.5 sm:gap-2">
           <button
+            onClick={() => setModal('profile')}
+            className="p-0.5 rounded-full border border-white/10 hover:border-neon/60 transition-colors"
+            title="Foto profil"
+          >
+            <Avatar id={me!.id} name={me!.username} size={28} src={avatarUrl(me!.avatar)} />
+          </button>
+          <button
             onClick={() => setModal('ghost')}
             className={`p-2 rounded-lg border transition-colors ${ghostMode ? 'text-neon border-neon/60 bg-neon/10 animate-pulse' : 'text-slate-400 border-white/10 hover:text-neon'}`}
             title="Ghost mode"
@@ -1213,6 +1224,7 @@ export default function ChatApp() {
               title={activePeer?.name ?? groups.find((g) => GRK(g.id) === active.key)?.name ?? ''}
               convKey={active.key}
               peerId={activePeer?.peerId}
+              peerAvatar={activePeer?.avatar}
               online={activePeer?.peerId ? !!onlineSet[activePeer.peerId] : undefined}
               messages={activeMsgs}
               keyObj={activeKeyObj}
@@ -1258,6 +1270,7 @@ export default function ChatApp() {
           <NewGroupModal users={users} meId={me!.id} onCreate={createGroup} onClose={() => setModal(null)} />
         )}
         {modal === 'ghost' && <GhostSettingsModal onClose={() => setModal(null)} />}
+        {modal === 'profile' && <ProfileModal onClose={() => setModal(null)} />}
       </AnimatePresence>
 
       {addMemberFor && (

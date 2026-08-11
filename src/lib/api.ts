@@ -322,6 +322,11 @@ export async function rpcUpdatePublicKey(username: string, password: string, new
   if (error) throw new Error(normalizeErr(error.message));
 }
 
+export async function rpcSetAvatar(pAvatar: string | null) {
+  const { error } = await nxRpc('set_avatar', { p_avatar: pAvatar });
+  if (error) throw new Error(normalizeErr(error.message));
+}
+
 // ---------- DIRECTORY / DM ----------
 export async function rpcListUsers(): Promise<User[]> {
   const { data, error } = await nxRpc('list_approved_users');
@@ -764,6 +769,21 @@ export async function uploadMedia(bucket: string, path: string, blob: Blob, user
 
 export function mediaUrl(bucket: string, path: string) {
   return supabase.storage.from(bucket).getPublicUrl(path).data.publicUrl;
+}
+
+// Foto profil: maks 5 MB, folder avatars/{uid}.
+export async function uploadAvatar(uid: string, blob: Blob) {
+  if (blob.size > 5 * 1024 * 1024) {
+    throw new Error('Foto profil maksimal 5 MB.');
+  }
+  const ext = (blob.type.split('/')[1] ?? 'jpg').replace(/[^a-zA-Z0-9]/g, '').slice(0, 5) || 'jpg';
+  const path = `${uid}/avatar-${Date.now()}.${ext}`;
+  const { error } = await supabase.storage.from('avatars').upload(path, blob, {
+    upsert: true,
+    contentType: blob.type,
+  });
+  if (error) throw new Error(normalizeErr(error.message));
+  return path;
 }
 
 export async function downloadMedia(bucket: string, path: string) {

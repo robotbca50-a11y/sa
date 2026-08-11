@@ -2,6 +2,7 @@ export type User = {
   id: string;
   username: string;
   public_key?: string | null;
+  avatar?: string | null;
   status?: string;
   is_admin?: boolean;
   created_at?: string;
@@ -14,6 +15,7 @@ export type ConversationItem = {
   peerId?: string;
   name: string;
   public_key?: string;
+  avatar?: string | null;
   online?: boolean;
   lastMsg?: string;
   lastAt?: string;

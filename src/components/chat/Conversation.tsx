@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import MessageBubble from './MessageBubble';
 import ChatInput from './ChatInput';
 import TypingDots from './TypingDots';
-import Avatar from '../Avatar';
+import Avatar, { avatarUrl } from '../Avatar';
 import type { Msg, Reaction } from '../../types';
 import { decodeMessage } from '../../lib/decrypt';
 import { rpcGetMessage, rpcGetGroupMessage } from '../../lib/api';
@@ -15,6 +15,7 @@ export default function Conversation({
   title,
   convKey,
   peerId,
+  peerAvatar,
   online,
   messages,
   keyObj,
@@ -37,6 +38,7 @@ export default function Conversation({
   title: string;
   convKey: string;
   peerId?: string;
+  peerAvatar?: string | null;
   online?: boolean;
   messages: Msg[];
   keyObj: CryptoKey;
@@ -104,7 +106,7 @@ export default function Conversation({
           <ArrowLeft size={20} />
         </button>
         <div className="relative">
-          <Avatar id={kind === 'dm' ? peerId! : `group:${title}`} name={title} size={40} online={kind === 'dm' ? online : undefined} />
+          <Avatar id={kind === 'dm' ? peerId! : `group:${title}`} name={title} size={40} online={kind === 'dm' ? online : undefined} src={kind === 'dm' ? avatarUrl(peerAvatar) : undefined} />
           {kind === 'group' && (
             <span className="absolute -bottom-0.5 -right-0.5 bg-arc rounded-md p-0.5">
               <Users size={9} className="text-white" />

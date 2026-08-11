@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { X, EyeOff, KeyRound } from 'lucide-react';
 import NeonButton from '../NeonButton';
-import Avatar, { hashColor } from '../Avatar';
+import Avatar, { hashColor, avatarUrl } from '../Avatar';
 import type { User } from '../../types';
 import { useStore } from '../../lib/store';
 import { exportPrivateKeyB64 } from '../../lib/keystore';
@@ -50,7 +50,7 @@ export function NewChatModal({ users, meId, onPick, onClose }: { users: User[]; 
             onClick={() => onPick(u)}
             className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-white/5 transition-colors"
           >
-            <Avatar id={u.id} name={u.username} size={38} />
+            <Avatar id={u.id} name={u.username} size={38} src={avatarUrl(u.avatar)} />
             <span className="text-sm text-white">{u.username}</span>
           </button>
         ))}
@@ -106,7 +106,7 @@ export function NewGroupModal({ users, meId, onCreate, onClose }: { users: User[
             onClick={() => setPicked((p) => (p.includes(u.id) ? p.filter((x) => x !== u.id) : [...p, u.id]))}
             className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-white/5 transition-colors"
           >
-            <Avatar id={u.id} name={u.username} size={34} />
+            <Avatar id={u.id} name={u.username} size={34} src={avatarUrl(u.avatar)} />
             <span className="text-sm text-white flex-1 text-left">{u.username}</span>
             <span
               className="w-4 h-4 rounded border flex items-center justify-center text-[10px]"
@@ -154,7 +154,7 @@ export function AddMemberModal({ users, meId, existing, onAdd, onClose }: { user
             onClick={() => { onAdd(u.id); onClose(); }}
             className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-white/5 transition-colors"
           >
-            <Avatar id={u.id} name={u.username} size={34} />
+            <Avatar id={u.id} name={u.username} size={34} src={avatarUrl(u.avatar)} />
             <span className="text-sm text-white">{u.username}</span>
           </button>
         ))}
@@ -248,6 +248,99 @@ export function GhostSettingsModal({ onClose }: { onClose: () => void }) {
       </div>
 
       <NeonButton variant="ghost" className="w-full" onClick={onClose}>SIMPAN & TUTUP</NeonButton>
+    </Modal>
+  );
+}
+
+export function ProfileModal({ onClose }: { onClose: () => void }) {
+  const me = useStore((s) => s.me);
+  const patchMe = useStore((s) => s.patchMe);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  async function pick(file: File | undefined) {
+    setMsg('');
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setMsg('Hanya file gambar.');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setMsg('Foto profil maksimal 5 MB.');
+      return;
+    }
+    if (!me) return;
+    setBusy(true);
+    try {
+      const { uploadAvatar, rpcSetAvatar } = await import('../../lib/api');
+      const path = await uploadAvatar(me.id, file);
+      await rpcSetAvatar(path);
+      patchMe({ avatar: `avatars/${path}` });
+      setMsg('Foto profil diperbarui.');
+      onClose();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Gagal upload foto profil.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    if (!me) return;
+    setBusy(true);
+    try {
+      const { rpcSetAvatar } = await import('../../lib/api');
+      await rpcSetAvatar(null);
+      patchMe({ avatar: null });
+      setMsg('Foto profil dihapus.');
+      onClose();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Gagal hapus foto profil.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal onClose={onClose}>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-mono font-bold text-neon tracking-widest">// Profil</h3>
+        <button onClick={onClose} className="text-slate-500 hover:text-virus"><X size={18} /></button>
+      </div>
+      <div className="flex flex-col items-center gap-3 mb-4">
+        <Avatar id={me?.id ?? 'me'} name={me?.username ?? '?'} size={84} src={avatarUrl(me?.avatar)} />
+        <div className="font-mono text-white font-semibold">@{me?.username}</div>
+      </div>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => pick(e.target.files?.[0])}
+      />
+      <div className="flex gap-2 mb-3">
+        <NeonButton
+          variant="primary"
+          className="flex-1"
+          disabled={busy}
+          onClick={() => fileRef.current?.click()}
+        >
+          GANTI FOTO
+        </NeonButton>
+        <NeonButton
+          variant="ghost"
+          className="flex-1"
+          disabled={busy || !me?.avatar}
+          onClick={remove}
+        >
+          HAPUS
+        </NeonButton>
+      </div>
+      <div className="text-[11px] font-mono text-slate-500 text-center">
+        JPG/PNG/WebP maks 5 MB. Foto tampil di daftar chat & header.
+      </div>
+      {msg && <div className="mt-2 text-xs font-mono text-lime text-center">{msg}</div>}
     </Modal>
   );
 }

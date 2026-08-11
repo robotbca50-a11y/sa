@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Plus, Search, MessageSquarePlus, Users } from 'lucide-react';
 import { motion } from 'framer-motion';
-import Avatar from '../Avatar';
+import Avatar, { avatarUrl } from '../Avatar';
 import type { ConversationItem } from '../../types';
 
 function fmtTime(iso?: string) {
@@ -76,7 +76,7 @@ export default function ConversationList({
               }`}
             >
               <div className="relative">
-                <Avatar id={it.kind === 'dm' ? it.id! : `group:${it.name}`} name={it.name} size={46} online={it.kind === 'dm' ? it.online : undefined} ghostOn={it.kind === 'dm' ? ghostOn : false} />
+                <Avatar id={it.kind === 'dm' ? it.id! : `group:${it.name}`} name={it.name} size={46} online={it.kind === 'dm' ? it.online : undefined} ghostOn={it.kind === 'dm' ? ghostOn : false} src={it.kind === 'dm' ? avatarUrl(it.avatar) : undefined} />
                 {it.kind === 'group' && (
                   <span className="absolute -bottom-1 -right-1 bg-arc rounded-md p-0.5 border border-abyss">
                     <Users size={8} className="text-white" />

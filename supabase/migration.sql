@@ -41,6 +41,7 @@ create table if not exists public.users (
 
 alter table public.users alter column password drop not null;
 alter table public.users add column if not exists is_admin boolean default false;
+alter table public.users add column if not exists avatar text;
 
 create table if not exists public.conversations (
   id uuid primary key default gen_random_uuid(),
@@ -356,24 +357,29 @@ alter table public.group_reactions replica identity full;
 -- ---------------------------------------------------------------------
 -- 5) STORAGE BUCKET + POLICIES
 -- ---------------------------------------------------------------------
-insert into storage.buckets (id, name, public)
-values ('chat-media', 'chat-media', true)
-on conflict (id) do nothing;
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('chat-media', 'chat-media', true, 536870912)
+on conflict (id) do update set public = true, file_size_limit = 536870912;
+
+-- Foto profil (bukan konten chat; tidak ikut auto-clean harian).
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('avatars', 'avatars', true, 5242880)
+on conflict (id) do update set public = true, file_size_limit = 5242880;
 
 do $$
 begin
   if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'nexus public upload') then
     create policy "nexus public upload" on storage.objects
-      for insert to anon, authenticated with check (bucket_id = 'chat-media');
+      for insert to anon, authenticated with check (bucket_id in ('chat-media','avatars'));
   end if;
   if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'nexus public read') then
     create policy "nexus public read" on storage.objects
-      for select to anon, authenticated using (bucket_id = 'chat-media');
+      for select to anon, authenticated using (bucket_id in ('chat-media','avatars'));
   end if;
   -- Dipakai auto-clean harian: client menghapus seluruh media di bucket.
   if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'nexus cleanup') then
     create policy "nexus cleanup" on storage.objects
-      for delete to anon, authenticated using (bucket_id = 'chat-media');
+      for delete to anon, authenticated using (bucket_id in ('chat-media','avatars'));
   end if;
 end $$;
 
@@ -403,7 +409,7 @@ begin
         'get_my_stories','view_story','get_story_views','delete_story','reel_add','get_reels',
         'delete_reel','upsert_location','log_access','set_blackout','get_blackout','get_blackout_public','list_blackouts',
         'get_blackout_ip','get_push_subscriptions','get_push_subscriptions_for_users','assert_media_path',
-        'save_push_subscription','delete_push_subscription','cleanup_push_subscription','maybe_cleanup'
+        'save_push_subscription','delete_push_subscription','cleanup_push_subscription','set_avatar','maybe_cleanup'
       )
   loop
     execute format('drop function if exists %s cascade', r.sig);
@@ -1037,16 +1043,36 @@ end $$;
 
 -- DIRECTORY & DM
 create or replace function public.list_approved_users()
-returns table (id uuid, username text, public_key text, created_at timestamptz)
+returns table (id uuid, username text, public_key text, avatar text, created_at timestamptz)
 language plpgsql security definer set search_path = public
 as $$
 begin
   perform public.rate_limit();
   perform public.require_auth();
   return query
-  select u.id, u.username, u.public_key, u.created_at from public.users u
+  select u.id, u.username, u.public_key, u.avatar, u.created_at from public.users u
   where u.status = 'approved' and coalesce(u.is_admin, false) = false
   order by u.username;
+end $$;
+
+-- Set/ganti/hapus foto profil akun sendiri. Path divalidasi ketat (cegah
+-- traversal); disimpan dengan prefix bucket supaya client bisa render URL.
+create or replace function public.set_avatar(p_avatar text)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  if p_avatar is null or btrim(p_avatar) = '' then
+    update public.users set avatar = null where id = v_uid;
+    return;
+  end if;
+  if p_avatar !~ '^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$' then
+    raise exception 'Path avatar tidak valid';
+  end if;
+  update public.users set avatar = 'avatars/' || p_avatar where id = v_uid;
 end $$;
 
 create or replace function public.get_public_key(p_username text)
@@ -1083,7 +1109,7 @@ begin
 end $$;
 
 create or replace function public.my_conversations(p_user_id uuid default null)
-returns table (id uuid, peer_id uuid, peer_username text, peer_public_key text, last_at timestamptz, last_type text, last_ciphertext text, last_iv text, last_sender_id uuid)
+returns table (id uuid, peer_id uuid, peer_username text, peer_public_key text, peer_avatar text, last_at timestamptz, last_type text, last_ciphertext text, last_iv text, last_sender_id uuid)
 language plpgsql security definer set search_path = public
 as $$
 declare v_uid uuid;
@@ -1096,6 +1122,7 @@ begin
     case when c.user_a = v_uid then c.user_b else c.user_a end as peer_id,
     pu.username as peer_username,
     pu.public_key as peer_public_key,
+    pu.avatar as peer_avatar,
     m.created_at as last_at,
     m.msg_type as last_type,
     m.ciphertext as last_ciphertext,

@@ -26,6 +26,7 @@ type State = {
 
   setView: (v: AppView) => void;
   setSession: (u: User | null, key: CryptoKey | null) => void;
+  patchMe: (patch: Partial<User>) => void;
   setOnline: (id: string, on: boolean) => void;
   setOnlineAll: (map: Record<string, boolean>) => void;
   toggleGhost: () => void;
@@ -56,6 +57,7 @@ export const useStore = create<State>((set, get) => ({
 
   setView: (v) => set({ view: v }),
   setSession: (me, privateKey) => set({ me, privateKey }),
+  patchMe: (patch) => set((s) => (s.me ? { me: { ...s.me, ...patch } } : {})),
   setOnline: (id, on) =>
     set((s) => ({ onlineSet: { ...s.onlineSet, [id]: on } })),
   setOnlineAll: (map) => set({ onlineSet: map }),

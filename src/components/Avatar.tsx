@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useStore } from '../lib/store';
+import { SUPABASE_URL } from '../lib/supabase';
 
 const PALETTE = [
   '#00f0ff', '#ff2ea6', '#7c3aed', '#b6ff2e', '#ff9f43', '#54a0ff', '#f368e0', '#1dd1a1',
@@ -17,6 +18,11 @@ export function ghostHandle(userId: string, username: string, ghostOn: boolean, 
   return `#${hashColor(userId + slot).replace('#', '')}`;
 }
 
+export function avatarUrl(path?: string | null) {
+  if (!path) return undefined;
+  return `${SUPABASE_URL}/storage/v1/object/public/${path}`;
+}
+
 export default function Avatar({
   id,
   name,
@@ -24,6 +30,7 @@ export default function Avatar({
   online,
   story,
   ghostOn,
+  src,
 }: {
   id: string;
   name: string;
@@ -31,6 +38,7 @@ export default function Avatar({
   online?: boolean;
   story?: boolean;
   ghostOn?: boolean;
+  src?: string;
 }) {
   const ghostInterval = useStore((s) => s.ghostInterval);
   const color = hashColor(id);
@@ -53,9 +61,9 @@ export default function Avatar({
         />
       )}
       <div
-        className="relative w-full h-full rounded-full flex items-center justify-center font-mono font-semibold"
+        className="relative w-full h-full rounded-full flex items-center justify-center font-mono font-semibold overflow-hidden"
         style={{
-          background: `linear-gradient(135deg, ${color}33, ${color}55)`,
+          background: src ? '#0b0f14' : `linear-gradient(135deg, ${color}33, ${color}55)`,
           border: `1.5px solid ${color}aa`,
           color: color,
           fontSize: size * 0.36,
@@ -63,7 +71,11 @@ export default function Avatar({
           boxShadow: `0 0 14px ${color}44`,
         }}
       >
-        {initials}
+        {src ? (
+          <img src={src} alt={name} className="w-full h-full object-cover" />
+        ) : (
+          initials
+        )}
       </div>
       {online !== undefined && (
         <span
