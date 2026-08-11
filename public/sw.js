@@ -34,6 +34,11 @@ self.addEventListener('push', (event) => {
     body: data.body,
     icon: '/nexus.svg',
     badge: '/nexus.svg',
+    // Satu tag untuk semua: notif baru MENGGANTI notif lama yang masih tampil,
+    // jadi tidak menumpuk banyak notif di layar.
+    tag: 'nexus',
+    renotify: true,
+    requireInteraction: false,
     data: { url: data.url || '/' },
     vibrate: [120, 40, 120],
   };

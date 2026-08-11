@@ -220,7 +220,7 @@ export function nativeNotify(title: string, body?: string) {
   if (!notifSupported() || Notification.permission !== 'granted') return;
   if (!document.hidden) return;
   try {
-    new Notification(title, { body, icon: '/nexus.svg', tag: `nexus:${title}` });
+    new Notification(title, { body, icon: '/nexus.svg', tag: 'nexus' });
   } catch {
     /* noop */
   }

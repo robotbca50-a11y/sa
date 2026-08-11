@@ -8,6 +8,7 @@ export type Toast = {
   icon?: string;
   kind?: 'info' | 'call' | 'story' | 'reel' | 'msg';
   onClick?: () => void;
+  duration?: number;
 };
 
 type State = {
@@ -63,7 +64,7 @@ export const useStore = create<State>((set, get) => ({
   pushToast: (t) => {
     const id = ++toastId;
     set((s) => ({ toasts: [...s.toasts.slice(-4), { ...t, id }] }));
-    setTimeout(() => get().popToast(id), 6500);
+    setTimeout(() => get().popToast(id), t.duration ?? 3000);
   },
   popToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
   addUnread: (key, n = 1) =>
