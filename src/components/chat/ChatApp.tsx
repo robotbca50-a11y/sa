@@ -1170,7 +1170,24 @@ export default function ChatApp() {
             onClick={async () => {
               if (!me) return;
               appNotify('UJI NOTIF', 'Mengirim notif tes ke perangkat ini…', { icon: '⏳' });
-              const r = isNativeApp() ? await testNativePushSelf(me.id) : await testPushSelf(me.id);
+              if (isNativeApp()) {
+                const r = await testNativePushSelf(me.id);
+                if (r.ok && r.sent > 0) {
+                  appNotify('✅ NOTIF TES TERKIRIM', `Push diterima server & dikirim ke ${r.sent} perangkat. Cek layar perangkat ini!`, { icon: '✅' });
+                } else if (r.err) {
+                  appNotify('❌ UJI NOTIF GAGAL', r.err, { icon: '❌' });
+                } else {
+                  const detail = (r.results ?? []).map((x) => `${x.ok ? 'OK' : 'GAGAL'}: ${x.err ?? x.endpoint}`).join('\n');
+                  appNotify('❌ UJI NOTIF GAGAL', `Tidak ada perangkat yang menerima.\n${detail || 'Perangkat belum terdaftar — ketuk 🔔 dulu.'}`, { icon: '❌' });
+                }
+                return;
+              }
+              const pushOk = await ensurePush();
+              if (!pushOk) {
+                appNotify('❌ UJI NOTIF GAGAL', 'Push web belum aktif. Ketuk 🔔 dan izinkan notifikasi, lalu coba lagi.', { icon: '❌' });
+                return;
+              }
+              const r = await testPushSelf(me.id);
               if (r.ok && r.sent > 0) {
                 appNotify('✅ NOTIF TES TERKIRIM', `Push diterima server & dikirim ke ${r.sent} perangkat. Cek layar perangkat ini!`, { icon: '✅' });
               } else if (r.err) {
