@@ -243,11 +243,20 @@ Deno.serve(async (req) => {
     }
 
     // Akses via RPC security-definer, bukan query langsung — tabel di-lock RLS.
-    const { data: rows, error: subErr } = await rpc<Array<{ subscription: { endpoint: string; keys?: { p256dh?: string; auth?: string } | null } }>>(
-      'get_push_subscriptions_for_users',
-      { p_user_ids: targets_ids },
-      token,
-    );
+    // Saat self-test, target = diri sendiri, jadi pakai RPC "milik saya" karena
+    // get_push_subscriptions_for_users sengaja MEMBUANG target diri sendiri
+    // (x.id <> v_uid) demi anti-panen.
+    const { data: rows, error: subErr } = selfTest
+      ? await rpc<Array<{ subscription: { endpoint: string; keys?: { p256dh?: string; auth?: string } | null } }>>(
+          'get_my_push_subscriptions',
+          {},
+          token,
+        )
+      : await rpc<Array<{ subscription: { endpoint: string; keys?: { p256dh?: string; auth?: string } | null } }>>(
+          'get_push_subscriptions_for_users',
+          { p_user_ids: targets_ids },
+          token,
+        );
     if (subErr) return fail(subErr, 502);
 
     const targets: Array<{ endpoint: string; keys?: { p256dh?: string; auth?: string } | null }> = [];
@@ -258,11 +267,13 @@ Deno.serve(async (req) => {
     // Perangkat NATIVE (APK/iOS): token FCM. Jalan kalau FCM_SERVICE_ACCOUNT di-set.
     const devRows: Array<{ token: string; platform: string }> = [];
     if (parseServiceAccount(FCM_SERVICE_ACCOUNT)) {
-      const { data: dev, error: devErr } = await rpc<Array<{ token: string; platform: string }>>(
-        'get_device_tokens_for_users',
-        { p_user_ids: targets_ids },
-        token,
-      );
+      const { data: dev, error: devErr } = selfTest
+        ? await rpc<Array<{ token: string; platform: string }>>('get_my_device_tokens', {}, token)
+        : await rpc<Array<{ token: string; platform: string }>>(
+            'get_device_tokens_for_users',
+            { p_user_ids: targets_ids },
+            token,
+          );
       if (devErr) return fail(devErr, 502);
       devRows.push(...(dev ?? []));
     }

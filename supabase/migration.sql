@@ -1958,6 +1958,37 @@ begin
   where user_id = v_uid and subscription ->> 'endpoint' = p_endpoint;
 end $$;
 
+-- Diri sendiri: subscription push milik caller saja (dipakai tombol "UJI NOTIF"
+-- / self-test). Fungsi get_push_subscriptions_for_users sengaja MEMBUANG target
+-- diri sendiri (x.id <> v_uid) demi anti-panen, jadi self-test butuh RPC khusus
+-- yang hanya mengembalikan milik caller sendiri.
+create or replace function public.get_my_push_subscriptions()
+returns table (subscription jsonb)
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  return query select s.subscription
+  from public.push_subscriptions s
+  where s.user_id = v_uid;
+end $$;
+
+-- Diri sendiri: token FCM milik caller saja (dipakai UJI NOTIF di APK/iOS).
+create or replace function public.get_my_device_tokens()
+returns table (token text, platform text)
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  return query select dt.token, dt.platform
+  from public.device_tokens dt
+  where dt.user_id = v_uid;
+end $$;
+
 -- Edge function memanggil ini saat push service balas 404/410 (endpoint mati),
 -- biar subscription basi tidak menumpuk. Boleh dihapus oleh pemiliknya sendiri
 -- atau user yang masih berhubungan (satu DM / satu grup) dengannya.
