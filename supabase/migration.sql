@@ -532,10 +532,12 @@ end $$;
 
 create or replace function public.me()
 returns uuid
-language sql stable set search_path = public
+language plpgsql security definer stable set search_path = public
 as $$
-  select public.auth_user_id();
-$$;
+declare v_uid uuid := public.auth_user_id();
+begin
+  return v_uid;
+end $$;
 
 -- Wajib login: return user_id atau tolak
 create or replace function public.require_auth()

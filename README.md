@@ -96,9 +96,29 @@ npx cap sync         # salin dist ke android/ dan ios/
 - Konfigurasi app native ada di `capacitor.config.ts` (appId `com.nexus.chat`,
   scheme `https://localhost` biar WebCrypto jalan di Android; iOS otomatis secure).
 
-Catatan push: di app native, Web Push (VAPID) tidak berlaku seperti di browser —
-notifikasi native butuh plugin `@capacitor/push-notifications` + FCM (Android) /
-APNs (iOS). Chat tetap live via Supabase Realtime di semua platform.
+### Push notification native (APK / iOS)
+Di app native, Web Push (VAPID) tidak berlaku seperti di browser — notifikasi
+native butuh Firebase (FCM). Langkah sekali-setup:
+
+1. **Buat project Firebase** → tambah app **Android** (package id `com.nexus.chat`)
+   dan **iOS** (bundle id `com.nexus.chat`).
+2. **Android**: unduh `google-services.json` lalu taruh di `android/app/`,
+   lalu `npm run build && npx cap sync android` (plugin `@capacitor/push-notifications`
+   sudah ada; Capacitor auto-apply plugin google-services saat file JSON terdeteksi).
+3. **Ambang secret**: di Firebase Console → Settings → Service accounts →
+   "Generate new private key" → hasil JSON diset ke Supabase:
+   ```bash
+   supabase secrets set FCM_SERVICE_ACCOUNT="<isi isi file JSON Firebase>"
+   ```
+   Tanpa secret ini edge function `send-push` tidak bisa mengirim FCM.
+4. **Deploy ulang fungsi**: `supabase functions deploy send-push`.
+5. **iOS (butuh Mac + Xcode)**: unduh `GoogleService-Info.plist` ke `ios/App/App/`,
+   tambah capability **Push Notifications** + Background Modes (remote notifications)
+   di Xcode, set Signing Team, lalu build ke device fisik (APNs tidak jalan di Simulator).
+6. **Uji**: di app native ketuk ikon `➤` (UJI NOTIF) — izin notifikasi diminta,
+   token FCM terdaftar otomatis (`device_tokens`), dan push tes dikirim ke perangkat.
+
+VAPID_* secrets (untuk Web Push di browser/PWA, termasuk iOS Safari) sudah terpasang.
 
 ## Alur pendaftaran
 - User daftar → status `pending` → Master ACC di Panel Admin → baru bisa login.
