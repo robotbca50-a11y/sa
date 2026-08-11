@@ -1,5 +1,5 @@
 import { downloadMedia } from './api';
-import { decryptBytes, decryptText, pickEntry, type PickResult } from './crypto';
+import { decryptText, pickEntry, b64ToBuf, type PickResult } from './crypto';
 import type { Msg } from '../types';
 
 export type Decoded = {
@@ -30,6 +30,40 @@ async function entryFor(key: CryptoKey, msg: Msg): Promise<Entry | null> {
   return msg.ciphertext ? { ct: msg.ciphertext, iv: msg.iv ?? '', key } : null;
 }
 
+// Dekripsi file media. Dua format:
+//  - v2 (baru): file = header JSON + blok ciphertext per chunk (lihat uploadBigMedia).
+//  - v1 (lama): file = satu ciphertext utuh, IV dari kolom messages.iv / entry multi-key.
+async function decryptMediaBlob(blob: Blob, key: CryptoKey, msg: Msg, entry: Entry | null): Promise<Blob | null> {
+  try {
+    const sample = await blob.slice(0, 131072).text();
+    const nl = sample.indexOf('\n');
+    const headStr = nl >= 0 ? sample.slice(0, nl) : sample;
+    if (headStr.trimStart().startsWith('{')) {
+      const h = JSON.parse(headStr);
+      if (h && h.v === 1 && Array.isArray(h.ivs) && h.n > 0) {
+        const headLen = new TextEncoder().encode(headStr + '\n').length;
+        const parts: BlobPart[] = [];
+        let off = headLen;
+        for (let i = 0; i < h.n; i++) {
+          const len = i === h.n - 1 ? h.size - (h.n - 1) * h.ch : h.ch;
+          const ct = await blob.slice(off, off + len).arrayBuffer();
+          const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64ToBuf(h.ivs[i]) }, key, ct);
+          parts.push(pt);
+          off += len;
+        }
+        return new Blob(parts, { type: h.mime || blob.type || 'application/octet-stream' });
+      }
+    }
+    const iv = (entry?.iv || msg.iv || '').trim();
+    if (!iv) return null;
+    const buf = await blob.arrayBuffer();
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64ToBuf(iv) }, entry?.key ?? key, buf);
+    return new Blob([pt], { type: blob.type || 'application/octet-stream' });
+  } catch {
+    return null;
+  }
+}
+
 export async function decodeMessage(msg: Msg, key: CryptoKey): Promise<Decoded> {
   if (cache.has(msg.id)) return cache.get(msg.id)!;
 
@@ -38,14 +72,16 @@ export async function decodeMessage(msg: Msg, key: CryptoKey): Promise<Decoded> 
   if (msg.msg_type === 'text' && entry) {
     const text = await decryptText(entry.key, entry.ct, entry.iv);
     out = { text, mediaUrl: null, mediaMime: '' };
-  } else if (msg.media_path && entry) {
-    const blob = await downloadMedia('chat-media', msg.media_path);
-    const plain = await decryptBytes(entry.key, entry.ct, entry.iv);
-    const mediaMime = blob.type || 'application/octet-stream';
-    const mediaBlob = new Blob([plain], { type: mediaMime });
-    out = { text: '', mediaUrl: URL.createObjectURL(mediaBlob), mediaMime };
   } else if (msg.media_path) {
-    out = { text: '', mediaUrl: null, mediaMime: '' };
+    try {
+      const blob = await downloadMedia('chat-media', msg.media_path);
+      const plain = await decryptMediaBlob(blob, key, msg, entry);
+      out = plain
+        ? { text: '', mediaUrl: URL.createObjectURL(plain), mediaMime: plain.type || 'application/octet-stream' }
+        : { text: '', mediaUrl: null, mediaMime: '' };
+    } catch {
+      out = { text: '', mediaUrl: null, mediaMime: '' };
+    }
   } else {
     out = { text: '🔒 [Pesan terenkripsi]', mediaUrl: null, mediaMime: '' };
   }

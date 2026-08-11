@@ -1,5 +1,6 @@
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase';
 import { loadToken, saveToken, clearSession } from './session';
+import { bufToB64 } from './crypto';
 import type {
   User,
   Msg,
@@ -860,10 +861,21 @@ export function mediaUrl(bucket: string, path: string) {
 // ---------- MEDIA BESAR (host Railway, >50MB — di luar batas Supabase Free) ----------
 export const MEDIA_BASE = 'https://sa-production-244d.up.railway.app';
 const MAX_BIG_UPLOAD_BYTES = 1024 * 1024 * 1024;
+const CHUNK = 4 * 1024 * 1024;
 
-export function uploadBigMedia(blob: Blob, onProgress?: (sent: number, total: number) => void): Promise<string> {
-  return new Promise((resolve, reject) => {
-    if (blob.size > MAX_BIG_UPLOAD_BYTES) {
+// Format file media versi 2 (chunked):
+//   <header>\n  =>  {"v":1,"ch":<chunkSize>,"n":<count>,"size":<plainSize>,"mime":"...","ivs":[...]}
+//   lalu n blok ciphertext AES-GCM (tiap blok = chunk plaintext + tag 16 byte).
+// Disimpan SEKALI di file (host media) DAN ringkas di kolom messages.ciphertext
+// (jauh di bawah limit 50K DB). Kolom messages.iv = IV chunk pertama.
+// Dekripsi: baca header dari file, decrypt tiap blok dengan ivs[i].
+export function uploadBigMedia(
+  file: Blob,
+  key: CryptoKey,
+  onProgress?: (sent: number, total: number) => void,
+): Promise<{ path: string; header: string; iv: string }> {
+  return new Promise(async (resolve, reject) => {
+    if (file.size > MAX_BIG_UPLOAD_BYTES) {
       reject(new Error('File terlalu besar — maksimal 1 GB per kirim.'));
       return;
     }
@@ -872,29 +884,95 @@ export function uploadBigMedia(blob: Blob, onProgress?: (sent: number, total: nu
       reject(new Error('Sesi tidak valid. Login ulang.'));
       return;
     }
-    const ext = (blob.type.split('/')[1] ?? 'bin').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'bin';
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${MEDIA_BASE}/api/upload`);
-    xhr.setRequestHeader('x-nexus-token', token);
-    xhr.setRequestHeader('x-file-ext', ext);
-    xhr.setRequestHeader('Content-Type', blob.type || 'application/octet-stream');
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) onProgress?.(e.loaded, e.total);
-    };
-    xhr.onload = () => {
-      try {
-        const data = JSON.parse(xhr.responseText) as { path?: string; error?: string };
-        if (xhr.status >= 200 && xhr.status < 300 && data.path) {
-          resolve(data.path);
-        } else {
-          reject(new Error(data.error || `Upload gagal (${xhr.status}).`));
+    const size = file.size;
+    const n = Math.max(1, Math.ceil(size / CHUNK));
+    const ivs: Uint8Array[] = [];
+    for (let i = 0; i < n; i++) ivs.push(crypto.getRandomValues(new Uint8Array(12)));
+    const header = JSON.stringify({
+      v: 1,
+      ch: CHUNK,
+      n,
+      size,
+      mime: file.type || 'application/octet-stream',
+      ivs: ivs.map((iv) => bufToB64(iv)),
+    });
+    const headBytes = new TextEncoder().encode(header + '\n');
+
+    let pushedHead = false;
+    let i = 0;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (!pushedHead) {
+          controller.enqueue(headBytes);
+          pushedHead = true;
         }
-      } catch {
-        reject(new Error(`Upload gagal (${xhr.status}).`));
+        if (i >= n) {
+          controller.close();
+          return;
+        }
+        const start = i * CHUNK;
+        const end = Math.min(size, start + CHUNK);
+        try {
+          const raw = await file.slice(start, end).arrayBuffer();
+          const ivBuf = ivs[i].buffer as ArrayBuffer;
+          const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: ivBuf }, key, raw as BufferSource));
+          controller.enqueue(ct);
+          i += 1;
+          onProgress?.(end, size);
+        } catch (e) {
+          controller.error(e);
+        }
+      },
+    });
+
+    const ext = (file.type.split('/')[1] ?? 'bin').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'bin';
+    try {
+      type StreamInit = RequestInit & { duplex?: 'half' };
+      const res = await fetch(`${MEDIA_BASE}/api/upload`, {
+        method: 'POST',
+        headers: {
+          'x-nexus-token': token,
+          'x-file-ext': ext,
+          'Content-Type': 'application/octet-stream',
+        },
+        body,
+        duplex: 'half',
+      } as StreamInit);
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.path) {
+        resolve({ path: data.path, header, iv: bufToB64(ivs[0]) });
+      } else {
+        reject(new Error(data?.error || `Upload gagal (${res.status}).`));
       }
-    };
-    xhr.onerror = () => reject(new Error('Upload gagal — periksa koneksi.'));
-    xhr.send(blob);
+    } catch (e) {
+      // Browser lama tanpa streaming request body: fallback XHR (file dimuat utuh).
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${MEDIA_BASE}/api/upload`);
+        xhr.setRequestHeader('x-nexus-token', token);
+        xhr.setRequestHeader('x-file-ext', ext);
+        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) onProgress?.(e.loaded, e.total);
+        };
+        xhr.onload = () => {
+          try {
+            const d = JSON.parse(xhr.responseText) as { path?: string; error?: string };
+            if (xhr.status >= 200 && xhr.status < 300 && d.path) {
+              resolve({ path: d.path, header, iv: bufToB64(ivs[0]) });
+            } else {
+              reject(new Error(d.error || `Upload gagal (${xhr.status}).`));
+            }
+          } catch {
+            reject(new Error(`Upload gagal (${xhr.status}).`));
+          }
+        };
+        xhr.onerror = () => reject(new Error('Upload gagal — periksa koneksi.'));
+        xhr.send(file);
+      } catch (e2) {
+        reject(e instanceof Error ? e : new Error(String(e2)));
+      }
+    }
   });
 }
 

@@ -798,7 +798,6 @@ export default function ChatApp() {
   async function sendMedia(file: File, replyTo?: string | null) {
     const a = activeRef.current;
     if (!a) return;
-    const SUPABASE_MAX = 50 * 1024 * 1024;
     const BIG_MAX = 1024 * 1024 * 1024;
     if (file.size > BIG_MAX) {
       appNotify('FILE TERLALU BESAR', 'Maksimal 1 GB per kirim.', { icon: '⚠️' });
@@ -814,27 +813,15 @@ export default function ChatApp() {
           ? 'voice'
           : 'image';
     try {
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const buf = await file.arrayBuffer();
-      const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, k, buf);
-      let path: string;
-      if (file.size > SUPABASE_MAX) {
-        appNotify('MENGIRIM MEDIA BESAR…', `${(file.size / 1048576).toFixed(0)} MB lewat host media (butuh server Railway baru).`, {
-          icon: '📤',
-        });
-        path = await uploadBigMedia(new Blob([encrypted], { type: file.type }));
-      } else {
-        path = `${a.kind === 'dm' ? 'dm' : 'grp'}/${crypto.randomUUID()}`;
-        await uploadMedia('chat-media', path, new Blob([encrypted], { type: file.type }), me?.id ?? null);
-      }
-      const ivB64 = bufToB64(iv);
-      const ctB64 = bufToB64(encrypted);
-      const peer = dmsRef.current.find((d) => d.key === a.key)?.peerId;
-      const peerUser = users.find((u) => u.id === peer);
-      const cts =
-        a.kind === 'dm'
-          ? await dmCiphertexts(new Uint8Array(buf), peer ?? '', peerUser?.public_key)
-          : undefined;
+      appNotify(
+        'MENGIRIM MEDIA…',
+        `${(file.size / 1048576).toFixed(0)} MB dienkripsi & diunggah ke host media (Railway)…`,
+        { icon: '📤' },
+      );
+      const { path, header, iv } = await uploadBigMedia(file, k);
+      const ivB64 = iv;
+      const ctB64 = header;
+      const cts = undefined;
       const localId = crypto.randomUUID();
       const localMsg: Msg = {
         id: localId,

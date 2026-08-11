@@ -74,7 +74,7 @@ app.post('/api/upload', async (req, res) => {
   if (rateLimited(clientIp(req))) return res.status(429).json({ error: 'Terlalu banyak upload — tunggu sebentar.' });
 
   const len = Number(req.headers['content-length'] || 0);
-  if (!len || len <= 0) return res.status(400).json({ error: 'Request kosong.' });
+  // Browser streaming body tidak mengirim Content-Length (chunked), jadi len bisa 0.
   if (len > MAX_BIG_BYTES) return res.status(413).json({ error: `File melebihi batas ${Math.round(MAX_BIG_BYTES / 1024 / 1024)} MB.` });
 
   const ext = String(req.headers['x-file-ext'] || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toLowerCase();
@@ -84,18 +84,39 @@ app.post('/api/upload', async (req, res) => {
 
   let got = 0;
   let failed = false;
+  let over = false;
+  let done = false;
   const ws = createWriteStream(filePath);
-  req.on('data', (c) => { got += c.length; });
+  ws.on('error', () => { failed = true; finish(); });
+  req.on('data', (c) => {
+    got += c.length;
+    if (got > MAX_BIG_BYTES) {
+      over = true;
+      req.destroy();
+    }
+  });
+  req.on('error', () => { failed = true; finish(); });
+  req.on('end', finish);
+  function finish() {
+    if (done) return;
+    done = true;
+    ws.end();
+  }
+  req.pipe(ws);
+
   await new Promise((resolve) => {
-    ws.on('finish', resolve);
-    ws.on('error', () => { failed = true; resolve(); });
-    req.on('error', () => { failed = true; resolve(); });
-    req.pipe(ws);
+    ws.on('close', resolve);
+    ws.on('error', resolve);
   });
 
-  if (failed || got !== len) {
+  if (failed || over || got === 0) {
     fs.rmSync(filePath, { force: true });
-    return res.status(400).json({ error: 'Upload terputus.' });
+    const status = over ? 413 : 400;
+    const msg = over
+      ? `File melebihi batas ${Math.round(MAX_BIG_BYTES / 1024 / 1024)} MB.`
+      : 'Upload terputus.';
+    try { res.status(status).json({ error: msg }); } catch { /* socket sudah mati */ }
+    return;
   }
 
   res.status(201).json({ path: rel, size: got });
