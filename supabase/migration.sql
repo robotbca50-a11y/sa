@@ -538,12 +538,14 @@ begin
   return v_uid;
 end $$;
 
--- Logout: hapus sesi
+-- Logout: hapus sesi (wajib login + rate limit — cegah revoke sesi orang lain)
 create or replace function public.logout_user(p_token text)
 returns void
 language plpgsql security definer set search_path = public
 as $$
 begin
+  perform public.rate_limit();
+  perform public.require_auth();
   if p_token is null then
     return;
   end if;
@@ -1371,19 +1373,21 @@ begin
   insert into public.group_members (group_id, user_id) values (p_group_id, p_user_id) on conflict do nothing;
 end $$;
 
+-- Anggota grup (TANPA password/hash — eksplisit pilih kolom aman)
 create or replace function public.group_members(p_group_id uuid)
-returns setof public.users
+returns table (id uuid, username text, public_key text, avatar text, status text, is_admin boolean, created_at timestamptz)
 language plpgsql security definer set search_path = public
 as $$
 declare v_uid uuid;
 begin
   perform public.rate_limit();
   v_uid := public.require_auth();
-  if not exists (select 1 from public.group_members where group_id = p_group_id and user_id = v_uid) then
+  if not exists (select 1 from public.group_members gm where gm.group_id = p_group_id and gm.user_id = v_uid) then
     raise exception 'Akses ditolak: bukan anggota grup';
   end if;
   return query
-  select u.* from public.users u
+  select u.id, u.username, u.public_key, u.avatar, u.status, coalesce(u.is_admin, false), u.created_at
+  from public.users u
   join public.group_members gm on gm.user_id = u.id
   where gm.group_id = p_group_id
     and coalesce(u.is_admin, false) = false;
@@ -1841,28 +1845,53 @@ create or replace function public.get_push_subscriptions_for_users(p_user_ids uu
 returns table (subscription jsonb)
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_auth();
+  v_uid := public.require_auth();
   if p_user_ids is null or array_length(p_user_ids, 1) = 0 then
     return;
   end if;
-  return query select s.subscription from public.push_subscriptions s
-  where s.user_id = any(p_user_ids);
+  -- Hanya endpoint untuk user yang benar-benar berhubungan dengan caller
+  -- (satu DM / satu grup) — anti-panen endpoint user asing.
+  return query select s.subscription
+  from public.push_subscriptions s
+  where s.user_id in (
+    select distinct x.id
+    from unnest(p_user_ids) as x(id)
+    where x.id <> v_uid
+      and (
+        exists (
+          select 1 from public.conversations c
+          where (c.user_a = v_uid and c.user_b = x.id)
+             or (c.user_a = x.id and c.user_b = v_uid)
+        )
+        or exists (
+          select 1 from public.group_members a
+          join public.group_members b on a.group_id = b.group_id
+          where a.user_id = v_uid and b.user_id = x.id
+        )
+      )
+  );
 end $$;
 
 -- Cegah spam push: kembalikan hanya id target yang benar-benar berhubungan
 -- dengan si pengirim (satu DM / satu grup). Dipanggil edge function send-push
 -- SEBELUM mengambil subscription, jadi user tidak bisa push ke orang asing.
+-- p_from WAJIB sama dengan caller (anti enumerasi graf sosial orang lain).
 create or replace function public.filter_notify_targets(p_from uuid, p_ids uuid[])
 returns table (user_id uuid)
 language plpgsql security definer set search_path = public
 as $$
+declare v_uid uuid;
 begin
   perform public.rate_limit();
-  perform public.require_auth();
+  v_uid := public.require_auth();
   if p_from is null or p_ids is null or array_length(p_ids, 1) = 0 then
     return;
+  end if;
+  if p_from <> v_uid then
+    raise exception 'Akses ditolak: identitas tidak cocok';
   end if;
   return query
   select distinct x.id
@@ -1894,10 +1923,11 @@ begin
   if p_subscription is null or p_subscription ->> 'endpoint' is null then
     raise exception 'Subscription tidak valid';
   end if;
-  -- Hapus baris lama dengan endpoint yang sama (mungkin milik akun lama di
-  -- perangkat yang sama) lalu simpan sebagai milik user yang sedang login.
+  -- Hapus baris LAMA milik user yang sama dengan endpoint sama (perangkat
+  -- daftar ulang). Tidak boleh menghapus endpoint milik user lain (anti-hijack).
   delete from public.push_subscriptions
-  where subscription ->> 'endpoint' = p_subscription ->> 'endpoint';
+  where user_id = v_uid
+    and subscription ->> 'endpoint' = p_subscription ->> 'endpoint';
   insert into public.push_subscriptions (user_id, subscription) values (v_uid, p_subscription);
 end $$;
 
