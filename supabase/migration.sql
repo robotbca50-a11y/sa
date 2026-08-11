@@ -1966,7 +1966,9 @@ begin
   delete from public.user_locations;
   delete from public.access_logs;
   delete from public.upload_daily;
-  delete from public.push_subscriptions;
+  -- push_subscriptions TIDAK ikut dibersihkan: itu pendaftaran perangkat
+  -- (bukan konten chat). Kalau ikut dihapus, push notification mati total
+  -- setiap 24 jam sampai user tekan 🔔 lagi.
   insert into public.cleanup_log (id, last_clean) values (1, now())
   on conflict (id) do update set last_clean = excluded.last_clean;
   return true;

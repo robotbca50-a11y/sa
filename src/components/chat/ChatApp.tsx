@@ -23,7 +23,7 @@ import {
 } from '../../lib/crypto';
 import { initPresence, stopPresence } from '../../lib/realtime';
 import { subscribeMessages, subscribeGroupMessages, subscribeReactions, subscribeGroupReactions, onTyping, onCall } from '../../lib/realtime';
-import { initNotifications, ensurePush, unsubscribePush, appNotify, updateTitle, triggerPush } from '../../lib/notify';
+import { initNotifications, ensurePush, unsubscribePush, persistPushSub, appNotify, updateTitle, triggerPush } from '../../lib/notify';
 import { decodeMessage, evictCache, clearCache, setDecryptPrivateKey } from '../../lib/decrypt';
 import { clearSession, readMsgCache, writeMsgCache, clearChatCache } from '../../lib/session';
 import Conversation from '../chat/Conversation';
@@ -133,6 +133,9 @@ export default function ChatApp() {
     // Daftarkan service worker SAJA. Izin push diminta via tombol 🔔 (user
     // gesture) — browser mobile memblokir request permission tanpa klik.
     initNotifications().catch(() => {});
+    // Self-heal: kalau izin sudah granted, pastikan subscription perangkat ini
+    // tetap ada di DB (kalau sempat hilang, dipasang ulang otomatis).
+    persistPushSub().catch(() => {});
     rpcLogAccess(me.id, 'open').catch(() => {});
 
     // AUTO-CLEAN 24 JAM: kalau database baru dibersihkan (lewat 1 hari),

@@ -90,6 +90,17 @@ export async function ensurePush(): Promise<boolean> {
   return ok;
 }
 
+// Dipanggil saat app dibuka (TANPA meminta izin): kalau izin sudah granted,
+// pastikan subscription perangkat ini tetap tersimpan di DB. Menutup lubang
+// kalau baris sempat hilang (misal auto-clean versi lama / perangkat logout),
+// biar notif tetap nyala tanpa perlu tekan 🔔 ulang.
+export async function persistPushSub(): Promise<boolean> {
+  if (!notifSupported() || Notification.permission !== 'granted') return false;
+  if (!swReady) await initNotifications();
+  const sub = await getSubscription();
+  return savePushSub(sub);
+}
+
 // Saat logout: hapus subscription dari DB + matikan push perangkat ini.
 export async function unsubscribePush(): Promise<void> {
   try {
