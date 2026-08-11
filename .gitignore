@@ -18,3 +18,6 @@ tsconfig.tsbuildinfo
 android/app/src/main/assets/public
 ios/App/App/public
 
+
+_sbjs_test.mjs
+supabase/.temp/
