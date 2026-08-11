@@ -79,6 +79,7 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json();
+    const selfTest = body?.self_test === true;
     const user_ids: string[] = Array.isArray(body?.user_ids)
       ? body.user_ids.map(String)
       : body?.user_id
@@ -86,18 +87,27 @@ Deno.serve(async (req) => {
         : [];
     if (!user_ids.length) return fail('Butuh user_id / user_ids.');
 
-    // Hanya kirim ke user yang benar-benar berhubungan dengan pengirim
-    // (satu DM / satu grup). User asing tidak bisa di-push.
-    const { data: allowed, error: filterErr } = await rpc<Array<{ user_id: string }>>(
-      'filter_notify_targets',
-      { p_from: uid, p_ids: user_ids },
-      token,
-    );
-    if (filterErr) return fail(filterErr, 502);
-    const targets_ids: string[] = (allowed ?? [])
-      .map((r) => String(r.user_id))
-      .slice(0, MAX_TARGETS);
-    if (!targets_ids.length) return fail('Tidak ada penerima yang valid.', 400);
+    // Mode uji diri sendiri (tombol "UJI NOTIF"): kirim ke akun sendiri,
+    // SKIP filter target. Hanya boleh ke uid sendiri — user lain tetap difilter.
+    let targets_ids: string[];
+    if (selfTest) {
+      const onlySelf = user_ids.filter((id) => id === uid).slice(0, 1);
+      if (!onlySelf.length) return fail('self_test hanya bisa ke akun sendiri.', 400);
+      targets_ids = onlySelf;
+    } else {
+      // Hanya kirim ke user yang benar-benar berhubungan dengan pengirim
+      // (satu DM / satu grup). User asing tidak bisa di-push.
+      const { data: allowed, error: filterErr } = await rpc<Array<{ user_id: string }>>(
+        'filter_notify_targets',
+        { p_from: uid, p_ids: user_ids },
+        token,
+      );
+      if (filterErr) return fail(filterErr, 502);
+      targets_ids = (allowed ?? [])
+        .map((r) => String(r.user_id))
+        .slice(0, MAX_TARGETS);
+      if (!targets_ids.length) return fail('Tidak ada penerima yang valid.', 400);
+    }
 
     // Akses via RPC security-definer, bukan query langsung — tabel di-lock RLS.
     const { data: rows, error: subErr } = await rpc<Array<{ subscription: { endpoint: string; keys?: { p256dh?: string; auth?: string } | null } }>>(

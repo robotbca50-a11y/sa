@@ -139,6 +139,47 @@ export async function triggerPush(recipientIds: string[], title: string, body: s
   }
 }
 
+// Uji notif ke perangkat SENDIRI (tombol "UJI NOTIF"). Menjamin subscription
+// tersimpan lalu mengirim push ke diri sendiri; mengembalikan hasil detail
+// (sent berapa, dan alasan kalau gagal) untuk memudahkan debug di perangkat.
+export async function testPushSelf(uid: string): Promise<{ ok: boolean; sent: number; results: any[]; err?: string }> {
+  if (!notifSupported()) return { ok: false, sent: 0, results: [], err: 'Browser ini tidak mendukung push notification.' };
+  if (!swReady) await initNotifications();
+  if (Notification.permission !== 'granted') {
+    const granted = await requestNotifPermission();
+    if (!granted) {
+      return { ok: false, sent: 0, results: [], err: 'Izin notifikasi belum diberikan.' };
+    }
+  }
+  const sub = await getSubscription();
+  const saved = await savePushSub(sub);
+  if (!saved) return { ok: false, sent: 0, results: [], err: 'Gagal menyimpan pendaftaran perangkat ke server.' };
+  const token = loadToken();
+  if (!token) return { ok: false, sent: 0, results: [], err: 'Sesi login tidak ditemukan.' };
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+        'x-nexus-token': token,
+      },
+      body: JSON.stringify({
+        user_ids: [uid],
+        title: '🔔 UJI NOTIF',
+        body: 'Kalau kamu lihat ini, push notification NEXUS jalan!',
+        url: '/',
+        self_test: true,
+      }),
+    });
+    const j = await res.json();
+    return { ok: !!j.ok, sent: j.sent ?? 0, results: j.results ?? [], err: j.err };
+  } catch (e) {
+    return { ok: false, sent: 0, results: [], err: String(e) };
+  }
+}
+
 // Notifikasi sistem — hanya muncul saat tab tersembunyi (di background), biar
 // tidak dobel dengan toast in-app dan tidak mengganggu user yang sedang buka.
 export function nativeNotify(title: string, body?: string) {

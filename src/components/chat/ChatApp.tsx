@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Ghost, Bell, LogOut, MessageSquare, MonitorPlay,
-  Music, Download,
+  Music, Download, Send,
 } from 'lucide-react';
 import { useStore } from '../../lib/store';
 import {
@@ -23,7 +23,7 @@ import {
 } from '../../lib/crypto';
 import { initPresence, stopPresence } from '../../lib/realtime';
 import { subscribeMessages, subscribeGroupMessages, subscribeReactions, subscribeGroupReactions, onTyping, onCall } from '../../lib/realtime';
-import { initNotifications, ensurePush, unsubscribePush, persistPushSub, appNotify, updateTitle, triggerPush } from '../../lib/notify';
+import { initNotifications, ensurePush, unsubscribePush, persistPushSub, appNotify, updateTitle, triggerPush, testPushSelf } from '../../lib/notify';
 import { decodeMessage, evictCache, clearCache, setDecryptPrivateKey } from '../../lib/decrypt';
 import { clearSession, readMsgCache, writeMsgCache, clearChatCache } from '../../lib/session';
 import Conversation from '../chat/Conversation';
@@ -1115,6 +1115,25 @@ export default function ChatApp() {
                 {totalUnread}
               </span>
             )}
+          </button>
+          <button
+            onClick={async () => {
+              if (!me) return;
+              appNotify('UJI NOTIF', 'Mengirim notif tes ke perangkat ini…', { icon: '⏳' });
+              const r = await testPushSelf(me.id);
+              if (r.ok && r.sent > 0) {
+                appNotify('✅ NOTIF TES TERKIRIM', `Push diterima server & dikirim ke ${r.sent} perangkat. Cek layar perangkat ini!`, { icon: '✅' });
+              } else if (r.err) {
+                appNotify('❌ UJI NOTIF GAGAL', r.err, { icon: '❌' });
+              } else {
+                const detail = (r.results ?? []).map((x) => `${x.ok ? 'OK' : 'GAGAL'}: ${x.err ?? x.endpoint}`).join('\n');
+                appNotify('❌ UJI NOTIF GAGAL', `Tidak ada perangkat yang menerima.\n${detail || 'Perangkat belum terdaftar — ketuk 🔔 dulu.'}`, { icon: '❌' });
+              }
+            }}
+            className="relative p-2 rounded-lg text-slate-400 hover:text-neon border border-white/10"
+            title="Uji notifikasi (kirim push tes ke perangkat ini)"
+          >
+            <Send size={17} />
           </button>
           <button
             onClick={showInstallBanner}
