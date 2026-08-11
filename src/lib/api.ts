@@ -364,6 +364,7 @@ export async function rpcSendMessage(p: {
   replyTo?: string | null;
   id?: string | null;
   cts?: Record<string, { ct: string; iv: string }> | null;
+  mediaStatus?: string | null;
 }) {
   try {
     const { error } = await nxRpc('send_message', {
@@ -376,6 +377,7 @@ export async function rpcSendMessage(p: {
       p_reply_to: p.replyTo ?? null,
       p_id: p.id ?? undefined,
       p_ciphertexts: p.cts ?? null,
+      p_media_status: p.mediaStatus ?? null,
     });
     if (error) throw new Error(normalizeErr(error.message));
   } catch (e) {
@@ -391,6 +393,28 @@ export async function rpcSendMessage(p: {
       p_reply_to: p.replyTo ?? null,
     });
     if (error) throw new Error(normalizeErr(error.message));
+  }
+}
+
+export async function rpcSetMediaStatus(
+  id: string,
+  status: string,
+  path?: string | null,
+  ct?: string | null,
+  iv?: string | null,
+) {
+  try {
+    const { error } = await nxRpc('set_media_status', {
+      p_id: id,
+      p_status: status,
+      p_path: path ?? null,
+      p_ciphertext: ct ?? null,
+      p_iv: iv ?? null,
+    });
+    if (error) throw new Error(normalizeErr(error.message));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!isFuncNotFound(msg)) throw e;
   }
 }
 
@@ -506,6 +530,7 @@ export async function rpcGroupSend(p: {
   path?: string | null;
   replyTo?: string | null;
   id?: string | null;
+  mediaStatus?: string | null;
 }) {
   try {
     const { error } = await nxRpc('group_send', {
@@ -517,6 +542,7 @@ export async function rpcGroupSend(p: {
       p_media_path: p.path ?? null,
       p_reply_to: p.replyTo ?? null,
       p_id: p.id ?? undefined,
+      p_media_status: p.mediaStatus ?? null,
     });
     if (error) throw new Error(normalizeErr(error.message));
   } catch (e) {
@@ -869,34 +895,45 @@ const CHUNK = 4 * 1024 * 1024;
 // Disimpan SEKALI di file (host media) DAN ringkas di kolom messages.ciphertext
 // (jauh di bawah limit 50K DB). Kolom messages.iv = IV chunk pertama.
 // Dekripsi: baca header dari file, decrypt tiap blok dengan ivs[i].
+// Rencana (header + IV) dibuat DULU supaya pesan bisa tampil instan di kedua
+// sisi ("uploading") sebelum file benar-benar diunggah — WA-like.
+export type MediaPlan = { header: string; iv: string; ivs: Uint8Array[]; size: number };
+
+export function planBigMedia(file: Blob): MediaPlan {
+  if (file.size > MAX_BIG_UPLOAD_BYTES) {
+    throw new Error('File terlalu besar — maksimal 1 GB per kirim.');
+  }
+  const size = file.size;
+  const n = Math.max(1, Math.ceil(size / CHUNK));
+  const ivs: Uint8Array[] = [];
+  for (let i = 0; i < n; i++) ivs.push(crypto.getRandomValues(new Uint8Array(12)));
+  const header = JSON.stringify({
+    v: 1,
+    ch: CHUNK,
+    n,
+    size,
+    mime: file.type || 'application/octet-stream',
+    ivs: ivs.map((iv) => bufToB64(iv)),
+  });
+  return { header, iv: bufToB64(ivs[0]), ivs, size };
+}
+
 export function uploadBigMedia(
   file: Blob,
   key: CryptoKey,
+  plan: MediaPlan,
   onProgress?: (sent: number, total: number) => void,
-): Promise<{ path: string; header: string; iv: string }> {
+): Promise<{ path: string }> {
   return new Promise(async (resolve, reject) => {
-    if (file.size > MAX_BIG_UPLOAD_BYTES) {
-      reject(new Error('File terlalu besar — maksimal 1 GB per kirim.'));
-      return;
-    }
     const token = loadToken();
     if (!token) {
       reject(new Error('Sesi tidak valid. Login ulang.'));
       return;
     }
-    const size = file.size;
-    const n = Math.max(1, Math.ceil(size / CHUNK));
-    const ivs: Uint8Array[] = [];
-    for (let i = 0; i < n; i++) ivs.push(crypto.getRandomValues(new Uint8Array(12)));
-    const header = JSON.stringify({
-      v: 1,
-      ch: CHUNK,
-      n,
-      size,
-      mime: file.type || 'application/octet-stream',
-      ivs: ivs.map((iv) => bufToB64(iv)),
-    });
-    const headBytes = new TextEncoder().encode(header + '\n');
+    const size = plan.size;
+    const ivs = plan.ivs;
+    const n = ivs.length;
+    const headBytes = new TextEncoder().encode(plan.header + '\n');
 
     let pushedHead = false;
     let i = 0;
@@ -940,13 +977,25 @@ export function uploadBigMedia(
       } as StreamInit);
       const data = await res.json().catch(() => null);
       if (res.ok && data?.path) {
-        resolve({ path: data.path, header, iv: bufToB64(ivs[0]) });
+        resolve({ path: data.path });
       } else {
         reject(new Error(data?.error || `Upload gagal (${res.status}).`));
       }
     } catch (e) {
-      // Browser lama tanpa streaming request body: fallback XHR (file dimuat utuh).
+      // Browser lama tanpa streaming request body: fallback XHR. Bangun blob
+      // terenkripsi utuh dulu (memori naik ~ ukuran file), lalu kirim sekaligus.
       try {
+        const parts: BlobPart[] = [headBytes];
+        for (let ci = 0; ci < n; ci++) {
+          const start = ci * CHUNK;
+          const end = Math.min(size, start + CHUNK);
+          const raw = await file.slice(start, end).arrayBuffer();
+          const ivBuf = ivs[ci].buffer as ArrayBuffer;
+          const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: ivBuf }, key, raw as BufferSource);
+          parts.push(ct);
+          onProgress?.(end, size);
+        }
+        const blob = new Blob(parts, { type: file.type || 'application/octet-stream' });
         const xhr = new XMLHttpRequest();
         xhr.open('POST', `${MEDIA_BASE}/api/upload`);
         xhr.setRequestHeader('x-nexus-token', token);
@@ -959,7 +1008,7 @@ export function uploadBigMedia(
           try {
             const d = JSON.parse(xhr.responseText) as { path?: string; error?: string };
             if (xhr.status >= 200 && xhr.status < 300 && d.path) {
-              resolve({ path: d.path, header, iv: bufToB64(ivs[0]) });
+              resolve({ path: d.path });
             } else {
               reject(new Error(d.error || `Upload gagal (${xhr.status}).`));
             }
@@ -968,7 +1017,7 @@ export function uploadBigMedia(
           }
         };
         xhr.onerror = () => reject(new Error('Upload gagal — periksa koneksi.'));
-        xhr.send(file);
+        xhr.send(blob);
       } catch (e2) {
         reject(e instanceof Error ? e : new Error(String(e2)));
       }

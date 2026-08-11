@@ -37,6 +37,8 @@ export type Msg = {
   ciphertexts?: Record<string, { ct: string; iv: string }> | null;
   msg_type: 'text' | 'image' | 'video' | 'gif' | 'voice';
   media_path?: string | null;
+  media_status?: string | null;
+  uploadPct?: number;
   reply_to?: string | null;
   edited_at?: string | null;
   deleted?: boolean;

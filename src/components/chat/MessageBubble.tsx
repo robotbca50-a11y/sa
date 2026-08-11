@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { CornerUpLeft, Smile, Pencil, Trash2, Lock, Clock, Music, RotateCcw } from 'lucide-react';
+import { CornerUpLeft, Smile, Pencil, Trash2, Lock, Clock, Music, RotateCcw, Upload, AlertTriangle } from 'lucide-react';
 import { decodeMessage, evictCache } from '../../lib/decrypt';
 import type { Msg, Reaction } from '../../types';
 import Avatar from '../Avatar';
@@ -175,6 +175,16 @@ export default function MessageBubble({
   const showName = !isMine && senderName;
   const displayName = senderName;
   const status = isMine ? (msg.pending ? 'sending' : msg.failed ? 'failed' : readAt ? 'read' : 'sent') : 'none';
+  const isMedia = msg.msg_type !== 'text';
+  const mediaState: 'uploading' | 'failed' | 'ready' | 'missing' | null = isMedia
+    ? (msg.media_status === 'uploading'
+        ? 'uploading'
+        : msg.media_status === 'failed'
+          ? 'failed'
+          : msg.media_path
+            ? 'ready'
+            : 'missing')
+    : null;
 
   return (
     <motion.div
@@ -253,7 +263,31 @@ export default function MessageBubble({
             </button>
           )}
 
-          {decoded?.mediaUrl ? (
+          {mediaState === 'uploading' ? (
+            <div className="flex items-center gap-2 text-xs text-slate-300 font-mono min-w-[200px]">
+              <Upload size={13} className="animate-pulse text-neon shrink-0" />
+              <span className="truncate">
+                {isMine ? `Mengirim media${msg.uploadPct != null ? `… ${msg.uploadPct}%` : '…'}` : 'Menerima media…'}
+              </span>
+              {isMine && msg.uploadPct != null && msg.uploadPct > 0 && (
+                <span className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden min-w-[70px]">
+                  <span
+                    className="block h-full bg-neon rounded-full transition-all"
+                    style={{ width: `${msg.uploadPct}%` }}
+                  />
+                </span>
+              )}
+            </div>
+          ) : mediaState === 'failed' ? (
+            <div className="flex items-center gap-2 text-xs text-virus/80 font-mono">
+              <AlertTriangle size={13} />
+              {isMine ? 'Gagal mengirim media' : 'Media tidak tersedia'}
+            </div>
+          ) : mediaState === 'missing' ? (
+            <div className="flex items-center gap-2 text-xs text-slate-500 font-mono">
+              <Lock size={12} /> Media belum tersedia
+            </div>
+          ) : decoded?.mediaUrl ? (
             decoded.mediaMime.startsWith('audio/') ? (
               <div className="flex items-center gap-2 py-1 min-w-0 max-w-full">
                 <Music size={16} className="text-virus shrink-0" />

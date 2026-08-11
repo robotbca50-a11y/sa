@@ -13,7 +13,7 @@ import {
   rpcGroupCreate, rpcGroupAddMember, rpcGroupMembers, rpcGetGroupKey, rpcSaveGroupKey,
   rpcSaveGroupKeyBackup, rpcGetGroupKeyBackup, rpcGetAllUserKeys,
   rpcMarkMessagesRead, rpcMarkGroupMessagesRead,
-  rpcLogout, rpcLogAccess, uploadMedia, uploadBigMedia, toastErr,
+  rpcLogout, rpcLogAccess, uploadMedia, uploadBigMedia, planBigMedia, rpcSetMediaStatus, toastErr,
   rpcMaybeCleanup, wipeMediaBucket, wipeBigMedia,
 } from '../../lib/api';
 import {
@@ -114,6 +114,7 @@ export default function ChatApp() {
   const userMapRef = useRef<Record<string, string>>({});
   const userKeysRef = useRef<Record<string, string[]>>({});
   const inCallRef = useRef(false);
+  const mediaRetryRef = useRef(new Map<string, { file: File; replyTo: string | null }>());
 
   meRef.current = me;
   keyRef.current = privateKey;
@@ -413,9 +414,13 @@ export default function ChatApp() {
   }
 
   async function decryptForNotify(key: string, m: Msg, who: string) {
+    if (m.msg_type !== 'text') {
+      appNotify(who, `📎 ${m.msg_type}`, { icon: '💬' });
+      return;
+    }
     const k = keyMapRef.current[key];
     if (!k || !m.ciphertext) {
-      appNotify(who, m.msg_type === 'text' ? '🔒 Pesan terenkripsi' : `📎 ${m.msg_type}`, { icon: '💬' });
+      appNotify(who, '🔒 Pesan terenkripsi', { icon: '💬' });
       return;
     }
     try {
@@ -684,6 +689,13 @@ export default function ChatApp() {
     const a = activeRef.current;
     if (!a || !me) return;
     const key = a.key;
+    if (m.msg_type !== 'text') {
+      const media = mediaRetryRef.current.get(m.id);
+      if (media) {
+        await retryMedia(m, media.file, media.replyTo);
+        return;
+      }
+    }
     patchLocalMsg(key, m.id, { pending: true, failed: false });
     try {
       if (a.kind === 'dm') {
@@ -812,75 +824,125 @@ export default function ChatApp() {
         : file.type.startsWith('audio/')
           ? 'voice'
           : 'image';
+    const localId = crypto.randomUUID();
+    let plan;
     try {
-      appNotify(
-        'MENGIRIM MEDIA…',
-        `${(file.size / 1048576).toFixed(0)} MB dienkripsi & diunggah ke host media (Railway)…`,
-        { icon: '📤' },
-      );
-      const { path, header, iv } = await uploadBigMedia(file, k);
-      const ivB64 = iv;
-      const ctB64 = header;
-      const cts = undefined;
-      const localId = crypto.randomUUID();
-      const localMsg: Msg = {
-        id: localId,
-        conversation_id: a.kind === 'dm' ? a.key.replace('dm:', '') : undefined,
-        group_id: a.kind === 'group' ? a.key.replace('grp:', '') : undefined,
-        sender_id: me!.id,
-        username: me!.username,
-        ciphertext: ctB64,
-        iv: ivB64,
-        ciphertexts: cts,
-        msg_type: type,
-        media_path: path,
-        reply_to: replyTo ?? null,
-        deleted: false,
-        pending: true,
-        created_at: new Date().toISOString(),
-      };
-      appendRaw(a.key, localMsg);
-      try {
-        if (a.kind === 'dm') {
-          await rpcRetry(() =>
-            rpcSendMessage({
-              conversationId: a.key.replace('dm:', ''),
-              senderId: me!.id,
-              ct: ctB64,
-              iv: ivB64,
-              type,
-              path,
-              replyTo,
-              id: localId,
-              cts,
-            }),
-          );
-        } else {
-          await rpcRetry(() =>
-            rpcGroupSend({
-              groupId: a.key.replace('grp:', ''),
-              senderId: me!.id,
-              ct: ctB64,
-              iv: ivB64,
-              type,
-              path,
-              replyTo,
-              id: localId,
-            }),
-          );
-        }
-        refetchActive();
-        void pushAfterSend(
-          a,
-          a.kind === 'dm' ? me!.username : (groupsRef.current.find((g) => g.id === a.key.replace('grp:', ''))?.name ?? 'Grup'),
-          a.kind === 'dm' ? `📎 ${type}` : `📎 ${type} dari ${me!.username}`,
-        );
-      } catch (e) {
-        patchLocalMsg(a.key, localId, { pending: false, failed: true });
-        appNotify('GAGAL KIRIM MEDIA', toastErr(e), { icon: '⚠️' });
-      }
+      plan = planBigMedia(file);
     } catch (e) {
       appNotify('GAGAL MEDIA', toastErr(e), { icon: '⚠️' });
+      return;
+    }
+    mediaRetryRef.current.set(localId, { file, replyTo: replyTo ?? null });
+    // Bubble langsung muncul di KEDUA sisi (status "uploading"), isi menyusul
+    // setelah file dienkripsi & diunggah ke host media (WA-like).
+    const localMsg: Msg = {
+      id: localId,
+      conversation_id: a.kind === 'dm' ? a.key.replace('dm:', '') : undefined,
+      group_id: a.kind === 'group' ? a.key.replace('grp:', '') : undefined,
+      sender_id: me!.id,
+      username: me!.username,
+      ciphertext: plan.header,
+      iv: plan.iv,
+      msg_type: type,
+      media_path: null,
+      media_status: 'uploading',
+      uploadPct: 0,
+      reply_to: replyTo ?? null,
+      deleted: false,
+      pending: true,
+      created_at: new Date().toISOString(),
+    };
+    appendRaw(a.key, localMsg);
+    previewDm(a.key, localMsg);
+    try {
+      if (a.kind === 'dm') {
+        await rpcRetry(() =>
+          rpcSendMessage({
+            conversationId: a.key.replace('dm:', ''),
+            senderId: me!.id,
+            ct: plan.header,
+            iv: plan.iv,
+            type,
+            replyTo,
+            id: localId,
+            mediaStatus: 'uploading',
+          }),
+        );
+      } else {
+        await rpcRetry(() =>
+          rpcGroupSend({
+            groupId: a.key.replace('grp:', ''),
+            senderId: me!.id,
+            ct: plan.header,
+            iv: plan.iv,
+            type,
+            replyTo,
+            id: localId,
+            mediaStatus: 'uploading',
+          }),
+        );
+      }
+    } catch (e) {
+      mediaRetryRef.current.delete(localId);
+      patchLocalMsg(a.key, localId, { pending: false, failed: true, media_status: 'failed' });
+      appNotify('GAGAL KIRIM MEDIA', toastErr(e), { icon: '⚠️' });
+      return;
+    }
+    try {
+      const { path } = await uploadBigMedia(file, k, plan, (sent, total) => {
+        patchLocalMsg(a.key, localId, { uploadPct: total ? Math.round((sent / total) * 100) : 0 });
+      });
+      await rpcRetry(() => rpcSetMediaStatus(localId, 'ready', path));
+      mediaRetryRef.current.delete(localId);
+      patchLocalMsg(a.key, localId, { pending: false, media_status: 'ready', media_path: path });
+      refetchActive();
+      void pushAfterSend(
+        a,
+        a.kind === 'dm' ? me!.username : (groupsRef.current.find((g) => g.id === a.key.replace('grp:', ''))?.name ?? 'Grup'),
+        a.kind === 'dm' ? `📎 ${type}` : `📎 ${type} dari ${me!.username}`,
+      );
+    } catch (e) {
+      try {
+        await rpcRetry(() => rpcSetMediaStatus(localId, 'failed'));
+      } catch {
+        /* status gagal opsional */
+      }
+      patchLocalMsg(a.key, localId, { pending: false, failed: true, media_status: 'failed' });
+      appNotify('GAGAL KIRIM MEDIA', toastErr(e), { icon: '⚠️' });
+    }
+  }
+
+  async function retryMedia(m: Msg, file: File, replyTo: string | null) {
+    const a = activeRef.current;
+    if (!a) return;
+    const k = keyMapRef.current[a.key];
+    if (!k) return;
+    patchLocalMsg(a.key, m.id, { pending: true, failed: false, media_status: 'uploading', uploadPct: 0 });
+    let plan;
+    try {
+      plan = planBigMedia(file);
+    } catch (e) {
+      patchLocalMsg(a.key, m.id, { pending: false, failed: true, media_status: 'failed' });
+      appNotify('GAGAL MEDIA', toastErr(e), { icon: '⚠️' });
+      return;
+    }
+    try {
+      await rpcRetry(() => rpcSetMediaStatus(m.id, 'uploading', null, plan.header, plan.iv));
+      const { path } = await uploadBigMedia(file, k, plan, (sent, total) => {
+        patchLocalMsg(a.key, m.id, { uploadPct: total ? Math.round((sent / total) * 100) : 0 });
+      });
+      await rpcRetry(() => rpcSetMediaStatus(m.id, 'ready', path));
+      mediaRetryRef.current.delete(m.id);
+      patchLocalMsg(a.key, m.id, { pending: false, media_status: 'ready', media_path: path });
+      refetchActive();
+    } catch (e) {
+      try {
+        await rpcRetry(() => rpcSetMediaStatus(m.id, 'failed'));
+      } catch {
+        /* status gagal opsional */
+      }
+      patchLocalMsg(a.key, m.id, { pending: false, failed: true, media_status: 'failed' });
+      appNotify('GAGAL KIRIM MEDIA', toastErr(e), { icon: '⚠️' });
     }
   }
 

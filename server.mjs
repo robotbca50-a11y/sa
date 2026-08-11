@@ -88,7 +88,11 @@ app.post('/api/upload', async (req, res) => {
   let done = false;
   const ws = createWriteStream(filePath);
   ws.on('error', () => { failed = true; finish(); });
+  // Anti-hang: kalau tidak ada data 120 detik (koneksi mati/macet), putuskan
+  // request supaya client dapat error dan tidak "numpuk" selamanya.
+  let idle = setTimeout(() => { failed = true; req.destroy(); }, 120000);
   req.on('data', (c) => {
+    idle.refresh();
     got += c.length;
     if (got > MAX_BIG_BYTES) {
       over = true;
@@ -96,10 +100,12 @@ app.post('/api/upload', async (req, res) => {
     }
   });
   req.on('error', () => { failed = true; finish(); });
+  req.on('close', () => clearTimeout(idle));
   req.on('end', finish);
   function finish() {
     if (done) return;
     done = true;
+    clearTimeout(idle);
     ws.end();
   }
   req.pipe(ws);

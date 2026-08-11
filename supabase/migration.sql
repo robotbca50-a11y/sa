@@ -67,6 +67,8 @@ alter table public.messages add column if not exists deleted boolean default fal
 alter table public.messages add column if not exists read_at timestamptz;
 -- Multi-key E2E: ciphertext per public key penerima (kunci publik -> { ct, iv })
 alter table public.messages add column if not exists ciphertexts jsonb;
+-- Status media (WA-like: bubble langsung muncul, isi menyusul): 'uploading' -> 'ready' | 'failed'
+alter table public.messages add column if not exists media_status text;
 
 -- ---------------------------------------------------------------------
 -- 3) TABEL FITUR BARU
@@ -101,6 +103,7 @@ create table if not exists public.group_messages (
 );
 
 alter table public.group_messages add column if not exists read_at timestamptz;
+alter table public.group_messages add column if not exists media_status text;
 
 create table if not exists public.reactions (
   message_id uuid references public.messages(id) on delete cascade,
@@ -420,6 +423,7 @@ begin
         'get_my_stories','view_story','get_story_views','delete_story','reel_add','get_reels',
         'delete_reel','upsert_location','log_access','set_blackout','get_blackout','get_blackout_public','list_blackouts',
         'get_blackout_ip','get_push_subscriptions','get_push_subscriptions_for_users','assert_media_path',
+        'get_my_push_subscriptions','get_my_device_tokens','set_media_status',
         'save_push_subscription','delete_push_subscription','cleanup_push_subscription','set_avatar','maybe_cleanup',
         'save_device_token','delete_device_token','get_device_tokens_for_users','cleanup_device_token'
       )
@@ -1172,7 +1176,7 @@ begin
   end if;
 end $$;
 
-create or replace function public.send_message(p_conversation_id uuid, p_ciphertext text, p_iv text, p_msg_type text, p_media_path text default null, p_reply_to uuid default null, p_id uuid default gen_random_uuid(), p_sender_id uuid default null, p_ciphertexts jsonb default null)
+create or replace function public.send_message(p_conversation_id uuid, p_ciphertext text, p_iv text, p_msg_type text, p_media_path text default null, p_reply_to uuid default null, p_id uuid default gen_random_uuid(), p_sender_id uuid default null, p_ciphertexts jsonb default null, p_media_status text default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1188,13 +1192,55 @@ begin
   if p_ciphertext is not null and length(p_ciphertext) > 50000 then
     raise exception 'Pesan terlalu panjang';
   end if;
-  insert into public.messages (id, conversation_id, sender_id, ciphertext, iv, msg_type, media_path, reply_to, ciphertexts)
-  values (p_id, p_conversation_id, v_uid, p_ciphertext, p_iv, p_msg_type, p_media_path, p_reply_to, p_ciphertexts)
+  insert into public.messages (id, conversation_id, sender_id, ciphertext, iv, msg_type, media_path, reply_to, ciphertexts, media_status)
+  values (p_id, p_conversation_id, v_uid, p_ciphertext, p_iv, p_msg_type, p_media_path, p_reply_to, p_ciphertexts, p_media_status)
   on conflict (id) do nothing;
 end $$;
 
+create or replace function public.set_media_status(p_id uuid, p_status text, p_path text default null, p_ciphertext text default null, p_iv text default null)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  perform public.assert_media_path(p_path);
+  if p_status not in ('uploading','ready','failed') then
+    raise exception 'Status media tidak valid';
+  end if;
+  if exists (
+    select 1 from public.messages m
+    join public.conversations c on c.id = m.conversation_id
+    where m.id = p_id and (c.user_a = v_uid or c.user_b = v_uid) and m.sender_id = v_uid
+  ) then
+    update public.messages
+    set media_status = p_status,
+        media_path = coalesce(p_path, media_path),
+        ciphertext = coalesce(p_ciphertext, ciphertext),
+        iv = coalesce(p_iv, iv)
+    where id = p_id and sender_id = v_uid;
+    return;
+  end if;
+  if exists (
+    select 1 from public.group_messages m
+    join public.group_chats g on g.id = m.group_id
+    join public.group_members gm on gm.group_id = g.id and gm.user_id = v_uid
+    where m.id = p_id and m.sender_id = v_uid
+  ) then
+    update public.group_messages
+    set media_status = p_status,
+        media_path = coalesce(p_path, media_path),
+        ciphertext = coalesce(p_ciphertext, ciphertext),
+        iv = coalesce(p_iv, iv)
+    where id = p_id and sender_id = v_uid;
+    return;
+  end if;
+  raise exception 'Akses ditolak: bukan pengirim pesan';
+end $$;
+
 create or replace function public.get_messages(p_conversation_id uuid, p_user_id uuid default null)
-returns table (id uuid, conversation_id uuid, sender_id uuid, username text, sender_public_key text, ciphertext text, iv text, msg_type text, media_path text, reply_to uuid, edited_at timestamptz, deleted boolean, read_at timestamptz, created_at timestamptz, ciphertexts jsonb)
+returns table (id uuid, conversation_id uuid, sender_id uuid, username text, sender_public_key text, ciphertext text, iv text, msg_type text, media_path text, reply_to uuid, edited_at timestamptz, deleted boolean, read_at timestamptz, created_at timestamptz, ciphertexts jsonb, media_status text)
 language plpgsql security definer set search_path = public
 as $$
 begin
@@ -1202,7 +1248,7 @@ begin
   perform public.require_conversation_member(p_conversation_id, public.require_auth());
   return query
   select m.id, m.conversation_id, m.sender_id, u.username, u.public_key as sender_public_key,
-         m.ciphertext, m.iv, m.msg_type, m.media_path, m.reply_to, m.edited_at, m.deleted, m.read_at, m.created_at, m.ciphertexts
+         m.ciphertext, m.iv, m.msg_type, m.media_path, m.reply_to, m.edited_at, m.deleted, m.read_at, m.created_at, m.ciphertexts, m.media_status
   from public.messages m
   join public.users u on u.id = m.sender_id
   where m.conversation_id = p_conversation_id
@@ -1407,7 +1453,7 @@ begin
     and coalesce(u.is_admin, false) = false;
 end $$;
 
-create or replace function public.group_send(p_group_id uuid, p_ciphertext text, p_iv text, p_msg_type text, p_media_path text default null, p_reply_to uuid default null, p_id uuid default gen_random_uuid(), p_sender_id uuid default null)
+create or replace function public.group_send(p_group_id uuid, p_ciphertext text, p_iv text, p_msg_type text, p_media_path text default null, p_reply_to uuid default null, p_id uuid default gen_random_uuid(), p_sender_id uuid default null, p_media_status text default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1423,13 +1469,13 @@ begin
   if p_ciphertext is not null and length(p_ciphertext) > 50000 then
     raise exception 'Pesan terlalu panjang';
   end if;
-  insert into public.group_messages (id, group_id, sender_id, ciphertext, iv, msg_type, media_path, reply_to)
-  values (p_id, p_group_id, v_uid, p_ciphertext, p_iv, p_msg_type, p_media_path, p_reply_to)
+  insert into public.group_messages (id, group_id, sender_id, ciphertext, iv, msg_type, media_path, reply_to, media_status)
+  values (p_id, p_group_id, v_uid, p_ciphertext, p_iv, p_msg_type, p_media_path, p_reply_to, p_media_status)
   on conflict (id) do nothing;
 end $$;
 
 create or replace function public.get_group_messages(p_group_id uuid, p_user_id uuid default null)
-returns table (id uuid, group_id uuid, sender_id uuid, username text, sender_public_key text, ciphertext text, iv text, msg_type text, media_path text, reply_to uuid, edited_at timestamptz, deleted boolean, read_at timestamptz, created_at timestamptz)
+returns table (id uuid, group_id uuid, sender_id uuid, username text, sender_public_key text, ciphertext text, iv text, msg_type text, media_path text, reply_to uuid, edited_at timestamptz, deleted boolean, read_at timestamptz, created_at timestamptz, media_status text)
 language plpgsql security definer set search_path = public
 as $$
 begin
@@ -1437,7 +1483,7 @@ begin
   perform public.require_group_member(p_group_id, public.require_auth());
   return query
   select m.id, m.group_id, m.sender_id, u.username, u.public_key as sender_public_key,
-         m.ciphertext, m.iv, m.msg_type, m.media_path, m.reply_to, m.edited_at, m.deleted, m.read_at, m.created_at
+         m.ciphertext, m.iv, m.msg_type, m.media_path, m.reply_to, m.edited_at, m.deleted, m.read_at, m.created_at, m.media_status
   from public.group_messages m
   join public.users u on u.id = m.sender_id
   where m.group_id = p_group_id
