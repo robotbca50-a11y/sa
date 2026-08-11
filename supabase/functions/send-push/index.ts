@@ -31,11 +31,25 @@ if (PUBLIC_KEY && PRIVATE_KEY) {
   webpush.setVapidDetails(SUBJECT, PUBLIC_KEY, PRIVATE_KEY);
 }
 
-function fail(msg: string, status = 400): Response {
-  return new Response(JSON.stringify({ ok: false, err: msg }), {
+// Browser butuh CORS: fetch dari domain web ke edge function memicu preflight
+// OPTIONS (custom header x-nexus-token + application/json). Tanpa header ini
+// browser menolak request = "TypeError: Failed to fetch".
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-nexus-token',
+  'Access-Control-Max-Age': '86400',
+};
+
+function json(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
     status,
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...CORS },
   });
+}
+
+function fail(msg: string, status = 400): Response {
+  return json({ ok: false, err: msg }, status);
 }
 
 async function rpc<T>(name: string, body: Record<string, unknown>, token: string) {
@@ -66,6 +80,9 @@ async function rpc<T>(name: string, body: Record<string, unknown>, token: string
 }
 
 Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: CORS });
+  }
   try {
     // Wajib login: edge function dipanggil client dengan x-nexus-token.
     const token = req.headers.get('x-nexus-token') ?? '';
@@ -141,9 +158,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    return new Response(JSON.stringify({ ok: true, sent: results.filter((r) => r.ok).length, results }), {
-      headers: { 'content-type': 'application/json' },
-    });
+    return json({ ok: true, sent: results.filter((r) => r.ok).length, results });
   } catch (e) {
     return fail(String(e));
   }
