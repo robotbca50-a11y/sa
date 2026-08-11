@@ -13,6 +13,7 @@ yarn-error.log*
 !.vscode/extensions.json
 tsconfig.tsbuildinfo
 /vidios/
+/data/
 
 # Capacitor: web assets dikopi ulang tiap `npx cap sync` (dari dist/)
 android/app/src/main/assets/public

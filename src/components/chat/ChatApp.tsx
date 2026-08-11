@@ -13,8 +13,8 @@ import {
   rpcGroupCreate, rpcGroupAddMember, rpcGroupMembers, rpcGetGroupKey, rpcSaveGroupKey,
   rpcSaveGroupKeyBackup, rpcGetGroupKeyBackup, rpcGetAllUserKeys,
   rpcMarkMessagesRead, rpcMarkGroupMessagesRead,
-  rpcLogout, rpcLogAccess, uploadMedia, toastErr,
-  rpcMaybeCleanup, wipeMediaBucket,
+  rpcLogout, rpcLogAccess, uploadMedia, uploadBigMedia, toastErr,
+  rpcMaybeCleanup, wipeMediaBucket, wipeBigMedia,
 } from '../../lib/api';
 import {
   deriveSharedKey, encryptText, decryptText, randomAESKey, exportAESKey, encryptToRecipient,
@@ -164,6 +164,7 @@ export default function ChatApp() {
           clearCache();
           clearChatCache();
           wipeMediaBucket();
+          wipeBigMedia();
         }
       })
       .catch(() => {});
@@ -797,9 +798,10 @@ export default function ChatApp() {
   async function sendMedia(file: File, replyTo?: string | null) {
     const a = activeRef.current;
     if (!a) return;
-    const MAX_SIZE = 200 * 1024 * 1024;
-    if (file.size > MAX_SIZE) {
-      appNotify('FILE TERLALU BESAR', 'Maksimal 200 MB per kirim.', { icon: '⚠️' });
+    const SUPABASE_MAX = 50 * 1024 * 1024;
+    const BIG_MAX = 1024 * 1024 * 1024;
+    if (file.size > BIG_MAX) {
+      appNotify('FILE TERLALU BESAR', 'Maksimal 1 GB per kirim.', { icon: '⚠️' });
       return;
     }
     const k = keyMapRef.current[a.key];
@@ -815,8 +817,16 @@ export default function ChatApp() {
       const iv = crypto.getRandomValues(new Uint8Array(12));
       const buf = await file.arrayBuffer();
       const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, k, buf);
-      const path = `${a.kind === 'dm' ? 'dm' : 'grp'}/${crypto.randomUUID()}`;
-      await uploadMedia('chat-media', path, new Blob([encrypted], { type: file.type }), me?.id ?? null);
+      let path: string;
+      if (file.size > SUPABASE_MAX) {
+        appNotify('MENGIRIM MEDIA BESAR…', `${(file.size / 1048576).toFixed(0)} MB lewat host media (butuh server Railway baru).`, {
+          icon: '📤',
+        });
+        path = await uploadBigMedia(new Blob([encrypted], { type: file.type }));
+      } else {
+        path = `${a.kind === 'dm' ? 'dm' : 'grp'}/${crypto.randomUUID()}`;
+        await uploadMedia('chat-media', path, new Blob([encrypted], { type: file.type }), me?.id ?? null);
+      }
       const ivB64 = bufToB64(iv);
       const ctB64 = bufToB64(encrypted);
       const peer = dmsRef.current.find((d) => d.key === a.key)?.peerId;

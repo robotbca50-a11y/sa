@@ -8,6 +8,8 @@ end-to-end (ECDH P-256 + AES-256-GCM) di browser. Server cuma lihat ciphertext.
 - Chat 1-on-1 & grup — bubble, avatar, jam, online status, unread badge
 - Realtime: pesan, typing indicator, presence, reaction, edit, hapus
 - Kirim foto / video / GIF autoplay + paste gambar Ctrl+V
+- Kirim media BESAR (hingga 1 GB) — lewat host Railway sendiri, menembus batas 50 MB
+  plan Free Supabase (video tetap dienkripsi E2E di browser sebelum dikirim)
 - Reply pesan + reaction emoji (nama reaktor selalu tampil)
 - Story / Status (ilang otomatis 24 jam)
 - Reels (upload video sendiri autoplay + embed TikTok)
@@ -51,7 +53,27 @@ end-to-end (ECDH P-256 + AES-256-GCM) di browser. Server cuma lihat ciphertext.
 npm install
 npm run dev        # http://localhost:5173
 npm run build      # produksi
+node server.mjs    # serve dist/ + API media besar (upload/download/delete) + auth x-nexus-token
 ```
+
+## Media besar (>50 MB) — host Railway
+Supabase plan Free membatasi ukuran file 50 MB (batas global, tak bisa ditembus
+walaupun bucket di-set lebih besar). NEXUS mengatasi ini lewat media server sendiri:
+
+- `server.mjs` = Express yang serve `dist/` + endpoint media besar:
+  - `POST /api/upload` — auth via header `x-nexus-token`, simpan ke `DATA_DIR/big/<uid>/`, return `{ path }`
+  - `GET /media/<path>` — stream file (public, isinya ciphertext E2E)
+  - `DELETE /api/media?path=...` dan `DELETE /api/media/all` — hapus file milik user sendiri
+- Frontend: file >50 MB otomatis dienkripsi lalu di-upload ke host media, `media_path`
+  disimpan sebagai `big/...` (lolos validasi DB). Download/decrypt tetap satu alur dengan media biasa.
+- Setup Railway:
+  1. `railway.json` sudah pakai `node server.mjs`.
+  2. **Volume** (opsional tapi disarankan): mount `/data` (Hobby plan) supaya media tidak
+     hilang saat redeploy/restart. Tanpa volume, media besar tersimpan di disk ephemeral.
+  3. Env opsional: `DATA_DIR` (default `./data`), `MAX_BIG_BYTES` (default 1 GB),
+     `MAX_UPLOADS_PER_MIN` (default 10), `SUPABASE_URL`, `SUPABASE_ANON_KEY`.
+- Catatan: host media production dikunci di `src/lib/api.ts` (`MEDIA_BASE`). Untuk dev lokal,
+  media besar tetap dikirim ke host production.
 
 ## App iOS & Android (Capacitor — satu codebase, enkripsi sama persis)
 Web ini dibungkus jadi app native dengan **Capacitor**. Karena UI, logika chat, dan

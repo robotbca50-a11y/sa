@@ -742,11 +742,92 @@ export async function rpcLogAccess(userId: string, event: string, ip?: string, u
 }
 
 // ---------- STORAGE ----------
-const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+// Batas global plan Free Supabase: 50 MB per file (bucket chat-media sudah di-set 512MB,
+// tapi limit efektif = min(global tenant, bucket) = 50MB).
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+const TUS_CHUNK = 6 * 1024 * 1024;
+const TUS_CLASSIC_THRESHOLD = 6 * 1024 * 1024;
 
-export async function uploadMedia(bucket: string, path: string, blob: Blob, userId?: string | null) {
+function tusB64(s: string) {
+  try {
+    return btoa(unescape(encodeURIComponent(s)));
+  } catch {
+    return btoa(s);
+  }
+}
+
+async function tusRequest(url: string, init: RequestInit, retries = 3): Promise<Response> {
+  let lastErr: unknown;
+  for (let i = 0; i < retries; i++) {
+    try {
+      const res = await fetch(url, init);
+      if (res.status >= 500 && i < retries - 1) {
+        lastErr = new Error(`Server error ${res.status}`);
+        await new Promise((r) => setTimeout(r, 400 * (i + 1)));
+        continue;
+      }
+      return res;
+    } catch (e) {
+      lastErr = e;
+      if (i < retries - 1) await new Promise((r) => setTimeout(r, 400 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+async function tusUpload(bucket: string, path: string, blob: Blob, onProgress?: (sent: number, total: number) => void) {
+  const headers: Record<string, string> = {
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    'tus-resumable': '1.0.0',
+    'Upload-Length': String(blob.size),
+    'Upload-Metadata': [
+      `bucketName ${tusB64(bucket)}`,
+      `objectName ${tusB64(path)}`,
+      `contentType ${tusB64(blob.type || 'application/octet-stream')}`,
+    ].join(','),
+    'x-upsert': 'true',
+  };
+  const create = await tusRequest(`${SUPABASE_URL}/storage/v1/upload/resumable`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/offset+octet-stream' },
+  });
+  if (!create.ok) {
+    const body = await create.text();
+    if (/exceeded|too large|maximum/i.test(body)) {
+      throw new Error(`File melebihi batas upload (${(MAX_UPLOAD_BYTES / 1024 / 1024).toFixed(0)} MB).`);
+    }
+    throw new Error(normalizeErr(body || `Upload gagal (${create.status}).`));
+  }
+  const location = create.headers.get('location');
+  if (!location) throw new Error('Server tidak mengembalikan lokasi upload.');
+  let offset = 0;
+  while (offset < blob.size) {
+    const chunk = blob.slice(offset, Math.min(offset + TUS_CHUNK, blob.size));
+    const res = await tusRequest(location, {
+      method: 'PATCH',
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/offset+octet-stream',
+        'tus-resumable': '1.0.0',
+        'Upload-Offset': String(offset),
+      },
+      body: chunk,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(normalizeErr(body || `Upload gagal (${res.status}).`));
+    }
+    const next = Number(res.headers.get('x-upload-offset'));
+    offset = next && next > offset ? next : offset + chunk.size;
+    onProgress?.(offset, blob.size);
+  }
+}
+
+export async function uploadMedia(bucket: string, path: string, blob: Blob, userId?: string | null, onProgress?: (sent: number, total: number) => void) {
   if (blob.size > MAX_UPLOAD_BYTES) {
-    throw new Error('File terlalu besar — maksimal 200 MB per kirim.');
+    throw new Error(`File terlalu besar — maksimal ${MAX_UPLOAD_BYTES / 1024 / 1024} MB per kirim (batas plan Free Supabase).`);
   }
   if (userId) {
     try {
@@ -760,6 +841,10 @@ export async function uploadMedia(bucket: string, path: string, blob: Blob, user
       if (!isFuncNotFound(msg)) throw e;
     }
   }
+  if (blob.size > TUS_CLASSIC_THRESHOLD) {
+    await tusUpload(bucket, path, blob, onProgress);
+    return;
+  }
   const { error } = await supabase.storage.from(bucket).upload(path, blob, {
     upsert: true,
     contentType: blob.type,
@@ -768,7 +853,63 @@ export async function uploadMedia(bucket: string, path: string, blob: Blob, user
 }
 
 export function mediaUrl(bucket: string, path: string) {
+  if (path.startsWith('big/')) return `${MEDIA_BASE}/media/${path}`;
   return supabase.storage.from(bucket).getPublicUrl(path).data.publicUrl;
+}
+
+// ---------- MEDIA BESAR (host Railway, >50MB — di luar batas Supabase Free) ----------
+export const MEDIA_BASE = 'https://sa-production-244d.up.railway.app';
+const MAX_BIG_UPLOAD_BYTES = 1024 * 1024 * 1024;
+
+export function uploadBigMedia(blob: Blob, onProgress?: (sent: number, total: number) => void): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (blob.size > MAX_BIG_UPLOAD_BYTES) {
+      reject(new Error('File terlalu besar — maksimal 1 GB per kirim.'));
+      return;
+    }
+    const token = loadToken();
+    if (!token) {
+      reject(new Error('Sesi tidak valid. Login ulang.'));
+      return;
+    }
+    const ext = (blob.type.split('/')[1] ?? 'bin').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'bin';
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${MEDIA_BASE}/api/upload`);
+    xhr.setRequestHeader('x-nexus-token', token);
+    xhr.setRequestHeader('x-file-ext', ext);
+    xhr.setRequestHeader('Content-Type', blob.type || 'application/octet-stream');
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress?.(e.loaded, e.total);
+    };
+    xhr.onload = () => {
+      try {
+        const data = JSON.parse(xhr.responseText) as { path?: string; error?: string };
+        if (xhr.status >= 200 && xhr.status < 300 && data.path) {
+          resolve(data.path);
+        } else {
+          reject(new Error(data.error || `Upload gagal (${xhr.status}).`));
+        }
+      } catch {
+        reject(new Error(`Upload gagal (${xhr.status}).`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Upload gagal — periksa koneksi.'));
+    xhr.send(blob);
+  });
+}
+
+// Hapus semua media besar milik user di host Railway (dipanggil saat auto-clean 24 jam).
+export async function wipeBigMedia() {
+  try {
+    const token = loadToken();
+    if (!token) return;
+    await fetch(`${MEDIA_BASE}/api/media/all`, {
+      method: 'DELETE',
+      headers: { 'x-nexus-token': token },
+    });
+  } catch {
+    /* noop */
+  }
 }
 
 // Foto profil: maks 5 MB, folder avatars/{uid}.
@@ -787,6 +928,11 @@ export async function uploadAvatar(uid: string, blob: Blob) {
 }
 
 export async function downloadMedia(bucket: string, path: string) {
+  if (path.startsWith('big/')) {
+    const res = await fetch(`${MEDIA_BASE}/media/${path}`);
+    if (!res.ok) throw new Error(`Download media gagal (${res.status}).`);
+    return await res.blob();
+  }
   const { data, error } = await supabase.storage.from(bucket).download(path);
   if (error) throw new Error(normalizeErr(error.message));
   return data;
