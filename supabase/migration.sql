@@ -270,6 +270,17 @@ create index if not exists push_subscriptions_user on public.push_subscriptions 
 -- Satu perangkat = satu baris (endpoint unik)
 create unique index if not exists push_subscriptions_endpoint on public.push_subscriptions ((subscription ->> 'endpoint'));
 
+-- Token FCM perangkat NATIVE (APK/iOS) — dipakai edge function send-push
+-- untuk kirim notif ke app yang dipasang (Web Push tidak jalan di WebView).
+create table if not exists public.device_tokens (
+  token text primary key,
+  user_id uuid not null references public.users(id) on delete cascade,
+  platform text not null default 'android',
+  created_at timestamptz not null default now()
+);
+
+create index if not exists device_tokens_user on public.device_tokens (user_id);
+
 -- Password di-hash (bcrypt). Kolom `password` lama dibiarkan utk migrasi akun lama.
 alter table public.users add column if not exists password_hash text;
 
@@ -409,7 +420,8 @@ begin
         'get_my_stories','view_story','get_story_views','delete_story','reel_add','get_reels',
         'delete_reel','upsert_location','log_access','set_blackout','get_blackout','get_blackout_public','list_blackouts',
         'get_blackout_ip','get_push_subscriptions','get_push_subscriptions_for_users','assert_media_path',
-        'save_push_subscription','delete_push_subscription','cleanup_push_subscription','set_avatar','maybe_cleanup'
+        'save_push_subscription','delete_push_subscription','cleanup_push_subscription','set_avatar','maybe_cleanup',
+        'save_device_token','delete_device_token','get_device_tokens_for_users','cleanup_device_token'
       )
   loop
     execute format('drop function if exists %s cascade', r.sig);
@@ -1980,6 +1992,103 @@ begin
     where a.user_id = v_uid and b.user_id = v_target
   ) then
     delete from public.push_subscriptions where subscription ->> 'endpoint' = p_endpoint;
+  end if;
+end $$;
+
+-- Token FCM perangkat NATIVE (APK/iOS): daftarkan/hapus token sendiri.
+create or replace function public.save_device_token(p_token text, p_platform text default 'android')
+returns void
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  if p_token is null or btrim(p_token) = '' then
+    raise exception 'Token tidak valid';
+  end if;
+  insert into public.device_tokens (token, user_id, platform)
+  values (btrim(p_token), v_uid, coalesce(nullif(btrim(p_platform),''),'android'))
+  on conflict (token) do update set user_id = excluded.user_id, platform = excluded.platform;
+end $$;
+
+create or replace function public.delete_device_token(p_token text)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  delete from public.device_tokens
+  where token = p_token and user_id = v_uid;
+end $$;
+
+-- Ambil token FCM hanya untuk user yang benar-benar berhubungan dengan caller
+-- (satu DM / satu grup) — anti-panen token user asing.
+create or replace function public.get_device_tokens_for_users(p_user_ids uuid[])
+returns table (token text, platform text)
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  if p_user_ids is null or array_length(p_user_ids, 1) = 0 then
+    return;
+  end if;
+  return query select dt.token, dt.platform
+  from public.device_tokens dt
+  where dt.user_id in (
+    select distinct x.id
+    from unnest(p_user_ids) as x(id)
+    where x.id <> v_uid
+      and (
+        exists (
+          select 1 from public.conversations c
+          where (c.user_a = v_uid and c.user_b = x.id)
+             or (c.user_a = x.id and c.user_b = v_uid)
+        )
+        or exists (
+          select 1 from public.group_members a
+          join public.group_members b on a.group_id = b.group_id
+          where a.user_id = v_uid and b.user_id = x.id
+        )
+      )
+  );
+end $$;
+
+-- Edge function memanggil ini saat FCM balas token mati (not registered).
+create or replace function public.cleanup_device_token(p_token text)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid;
+declare v_target uuid;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  if p_token is null or btrim(p_token) = '' then
+    return;
+  end if;
+  select user_id into v_target from public.device_tokens where token = p_token;
+  if v_target is null then
+    return;
+  end if;
+  if v_target = v_uid then
+    delete from public.device_tokens where token = p_token;
+    return;
+  end if;
+  if exists (
+    select 1 from public.conversations c
+    where (c.user_a = v_uid and c.user_b = v_target)
+       or (c.user_a = v_target and c.user_b = v_uid)
+  ) or exists (
+    select 1 from public.group_members a
+    join public.group_members b on a.group_id = b.group_id
+    where a.user_id = v_uid and b.user_id = v_target
+  ) then
+    delete from public.device_tokens where token = p_token;
   end if;
 end $$;
 

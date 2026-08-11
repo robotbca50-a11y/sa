@@ -153,7 +153,7 @@ export async function unsubscribePush(): Promise<void> {
 // Gagal tidak mempengaruhi chat.
 // CATATAN: TIDAK bergantung pada pushActive si pengirim — yang penting penerima
 // yang sudah aktifkan push. Edge function memvalidasi via token + filter target.
-export async function triggerPush(recipientIds: string[], title: string, body: string, url = '/') {
+export async function triggerPush(recipientIds: string[], title: string, body: string, url = '/', convId?: string) {
   if (!recipientIds.length) return;
   const token = loadToken();
   if (!token || !recipientIds.length) return;
@@ -166,7 +166,7 @@ export async function triggerPush(recipientIds: string[], title: string, body: s
         'Content-Type': 'application/json',
         'x-nexus-token': token,
       },
-      body: JSON.stringify({ user_ids: recipientIds.slice(0, 50), title, body, url }),
+      body: JSON.stringify({ user_ids: recipientIds.slice(0, 50), title, body, url, convId }),
     });
   } catch {
     /* noop */

@@ -4,9 +4,12 @@
 //   supabase secrets set VAPID_SUBJECT=mailto:admin@nexus.app
 //   supabase secrets set VAPID_PUBLIC_KEY=<base64 public>
 //   supabase secrets set VAPID_PRIVATE_KEY=<base64 private>
+//   supabase secrets set FCM_SERVICE_ACCOUNT=<JSON service account Firebase>
 // Public key harus SAMA dengan yang dipakai client (src/lib/notify.ts).
 // Tanpa VAPID_PRIVATE_KEY edge function menolak kirim (tidak ada fallback),
 // supaya kunci private tidak pernah bocor ke repo.
+// FCM_SERVICE_ACCOUNT (opsional): kalau di-set, pesan juga dikirim ke
+// perangkat NATIVE (APK) via Firebase Cloud Messaging HTTP v1.
 // Dipanggil client: POST { user_ids: string[], title, body, url }
 //   header wajib: x-nexus-token = token login si pengirim
 //
@@ -25,10 +28,117 @@ const SUBJECT = Deno.env.get('VAPID_SUBJECT') ?? 'mailto:admin@nexus.app';
 const PUBLIC_KEY = Deno.env.get('VAPID_PUBLIC_KEY') ?? '';
 const PRIVATE_KEY = Deno.env.get('VAPID_PRIVATE_KEY') ?? '';
 
+// Service account FCM (JSON dari Firebase console). Kalau ada, edge function
+// juga mengirim ke perangkat NATIVE (APK) via FCM HTTP v1. Tanpa ini hanya
+// web push (browser/PWA) yang jalan.
+const FCM_SERVICE_ACCOUNT = Deno.env.get('FCM_SERVICE_ACCOUNT') ?? '';
+
 const MAX_TARGETS = 50;
 
 if (PUBLIC_KEY && PRIVATE_KEY) {
   webpush.setVapidDetails(SUBJECT, PUBLIC_KEY, PRIVATE_KEY);
+}
+
+// FCM v1 butuh OAuth2 access token yang dibuat dari service account (JWT
+// RS256 ditandatangani dengan kunci privat service account). Token berlaku 1
+// jam, di-cache di sini.
+let fcmAccessToken: { value: string; expiresAt: number } | null = null;
+
+function parseServiceAccount(raw: string) {
+  try {
+    const o = JSON.parse(raw);
+    if (!o.client_email || !o.private_key || !o.project_id) return null;
+    return o as { client_email: string; private_key: string; project_id: string };
+  } catch {
+    return null;
+  }
+}
+
+function b64url(input: string | ArrayBuffer): string {
+  const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : new Uint8Array(input);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+async function signJwt(header: string, payload: string, pemKey: string): Promise<string> {
+  const der = pemKey
+    .replace(/-----BEGIN [^-]+-----/g, '')
+    .replace(/-----END [^-]+-----/g, '')
+    .replace(/\s+/g, '');
+  const raw = Uint8Array.from(atob(der), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey(
+    'pkcs8',
+    raw as BufferSource,
+    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(`${header}.${payload}`));
+  return `${header}.${payload}.${b64url(sig)}`;
+}
+
+async function getFcmAccessToken(): Promise<string | null> {
+  const acc = parseServiceAccount(FCM_SERVICE_ACCOUNT);
+  if (!acc) return null;
+  if (fcmAccessToken && fcmAccessToken.expiresAt > Date.now() + 60_000) {
+    return fcmAccessToken.value;
+  }
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+    const payload = b64url(
+      JSON.stringify({
+        iss: acc.client_email,
+        scope: 'https://www.googleapis.com/auth/firebase.messaging',
+        aud: 'https://oauth2.googleapis.com/token',
+        iat: now,
+        exp: now + 3600,
+      }),
+    );
+    const assertion = await signJwt(header, payload, acc.private_key);
+    const res = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion,
+      }),
+    });
+    const j = await res.json();
+    if (!res.ok || !j.access_token) return null;
+    fcmAccessToken = { value: j.access_token, expiresAt: now * 1000 + (j.expires_in ?? 3600) * 1000 };
+    return fcmAccessToken.value;
+  } catch {
+    return null;
+  }
+}
+
+async function sendFcm(token: string, title: string, body: string, data: Record<string, string>): Promise<void> {
+  const acc = parseServiceAccount(FCM_SERVICE_ACCOUNT);
+  if (!acc) return;
+  const accessToken = await getFcmAccessToken();
+  if (!accessToken) return;
+  const res = await fetch(`https://fcm.googleapis.com/v1/projects/${acc.project_id}/messages:send`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      message: {
+        token,
+        notification: { title, body },
+        data,
+        android: { priority: 'high' },
+      },
+    }),
+  });
+  if (!res.ok) {
+    const j = await res.json().catch(() => null);
+    const err = (j && (j as { error?: { message?: string } }).error?.message) || `HTTP ${res.status}`;
+    throw new Error(err);
+  }
 }
 
 // Browser butuh CORS: fetch dari domain web ke edge function memicu preflight
@@ -144,7 +254,20 @@ Deno.serve(async (req) => {
     for (const row of rows ?? []) {
       if (row?.subscription?.endpoint) targets.push(row.subscription);
     }
-    if (!targets.length) return fail('Tidak ada subscription push aktif.', 404);
+
+    // Perangkat NATIVE (APK/iOS): token FCM. Jalan kalau FCM_SERVICE_ACCOUNT di-set.
+    const devRows: Array<{ token: string; platform: string }> = [];
+    if (parseServiceAccount(FCM_SERVICE_ACCOUNT)) {
+      const { data: dev, error: devErr } = await rpc<Array<{ token: string; platform: string }>>(
+        'get_device_tokens_for_users',
+        { p_user_ids: targets_ids },
+        token,
+      );
+      if (devErr) return fail(devErr, 502);
+      devRows.push(...(dev ?? []));
+    }
+
+    if (!targets.length && !devRows.length) return fail('Tidak ada subscription push aktif.', 404);
 
     const payload = JSON.stringify({ title: body?.title ?? 'NEXUS', body: body?.body ?? '', url: body?.url ?? '' });
     const results: Array<{ ok: boolean; endpoint: string; err?: string }> = [];
@@ -161,6 +284,22 @@ Deno.serve(async (req) => {
           await rpc('cleanup_push_subscription', { p_endpoint: sub.endpoint }, token).catch(() => {});
         }
         results.push({ ok: false, endpoint: sub.endpoint.slice(0, 40), err: msg });
+      }
+    }
+
+    const fcmTitle = String(body?.title ?? 'NEXUS');
+    const fcmBody = String(body?.body ?? '');
+    const data = { url: String(body?.url ?? ''), convId: String(body?.convId ?? '') };
+    for (const row of devRows) {
+      try {
+        await sendFcm(row.token, fcmTitle, fcmBody, data);
+        results.push({ ok: true, endpoint: `fcm:${row.platform}:${row.token.slice(0, 20)}` });
+      } catch (e) {
+        const msg = String((e as Error)?.message ?? e);
+        if (/registration-token-not-registered|UNREGISTERED|invalid.*token|not-found|SENDER_ID_MISMATCH/i.test(msg)) {
+          await rpc('cleanup_device_token', { p_token: row.token }, token).catch(() => {});
+        }
+        results.push({ ok: false, endpoint: `fcm:${row.platform}:${row.token.slice(0, 20)}`, err: msg });
       }
     }
 

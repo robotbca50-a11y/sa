@@ -24,6 +24,7 @@ import {
 import { initPresence, stopPresence } from '../../lib/realtime';
 import { subscribeMessages, subscribeGroupMessages, subscribeReactions, subscribeGroupReactions, onTyping, onCall } from '../../lib/realtime';
 import { initNotifications, ensurePush, unsubscribePush, persistPushSub, appNotify, updateTitle, triggerPush, testPushSelf, warmPush, needsIOSInstall } from '../../lib/notify';
+import { initNativePush, unregisterNativePush } from '../../lib/nativePush';
 import { decodeMessage, evictCache, clearCache, setDecryptPrivateKey } from '../../lib/decrypt';
 import { clearSession, readMsgCache, writeMsgCache, clearChatCache } from '../../lib/session';
 import Conversation from '../chat/Conversation';
@@ -142,6 +143,18 @@ export default function ChatApp() {
     // telat beberapa detik karena cold start.
     warmPush();
     const warmIv = setInterval(() => warmPush().catch(() => {}), 5 * 60_000);
+
+    // Notifikasi NATIVE (APK): daftarkan token FCM + listener. Di browser ini
+    // no-op. Notif native muncul via OS saat app di background; saat app
+    // terbuka, event pushNotificationReceived diterjemahkan jadi toast.
+    initNativePush(
+      (m) => appNotify(m.title, m.body, { icon: '📲' }),
+      (m) => {
+        const item = m.convId ? dmsRef.current.find((d) => d.id === m.convId) : undefined;
+        if (item) openDm(item);
+        else setTab('chats');
+      },
+    ).catch(() => {});
 
     // AUTO-CLEAN 24 JAM: kalau database baru dibersihkan (lewat 1 hari),
     // bersihkan juga cache + media di browser biar history benar-benar hilang.
@@ -653,8 +666,8 @@ export default function ChatApp() {
   async function pushAfterSend(a: { key: string; kind: 'dm' | 'group' }, title: string, body: string) {
     try {
       if (a.kind === 'dm') {
-        const peer = dmsRef.current.find((d) => d.key === a.key)?.peerId;
-        if (peer) await triggerPush([peer], title, body);
+        const conv = dmsRef.current.find((d) => d.key === a.key);
+        if (conv?.peerId) await triggerPush([conv.peerId], title, body, '/', conv.id);
       } else {
         const gid = a.key.replace('grp:', '');
         const members = await rpcGroupMembers(gid).catch(() => []);
@@ -1044,6 +1057,7 @@ export default function ChatApp() {
     if (me) rpcLogAccess(me.id, 'logout').catch(() => {});
     stopPresence();
     clearCache();
+    unregisterNativePush().catch(() => {});
     await unsubscribePush().catch(() => {});
     rpcLogout();
     clearSession();
