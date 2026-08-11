@@ -96,6 +96,12 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json();
+
+    // Keep-warm: panggilan ringan dari app (mount + tiap 5 menit) supaya
+    // function tidak cold-start saat pesan asli dikirim — cold start inilah
+    // yang bikin notif telat beberapa detik.
+    if (body?.warm === true) return json({ ok: true, warm: true });
+
     const selfTest = body?.self_test === true;
     const user_ids: string[] = Array.isArray(body?.user_ids)
       ? body.user_ids.map(String)

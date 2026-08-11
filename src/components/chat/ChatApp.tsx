@@ -23,7 +23,7 @@ import {
 } from '../../lib/crypto';
 import { initPresence, stopPresence } from '../../lib/realtime';
 import { subscribeMessages, subscribeGroupMessages, subscribeReactions, subscribeGroupReactions, onTyping, onCall } from '../../lib/realtime';
-import { initNotifications, ensurePush, unsubscribePush, persistPushSub, appNotify, updateTitle, triggerPush, testPushSelf } from '../../lib/notify';
+import { initNotifications, ensurePush, unsubscribePush, persistPushSub, appNotify, updateTitle, triggerPush, testPushSelf, warmPush, needsIOSInstall } from '../../lib/notify';
 import { decodeMessage, evictCache, clearCache, setDecryptPrivateKey } from '../../lib/decrypt';
 import { clearSession, readMsgCache, writeMsgCache, clearChatCache } from '../../lib/session';
 import Conversation from '../chat/Conversation';
@@ -137,6 +137,10 @@ export default function ChatApp() {
     // tetap ada di DB (kalau sempat hilang, dipasang ulang otomatis).
     persistPushSub().catch(() => {});
     rpcLogAccess(me.id, 'open').catch(() => {});
+    // Keep-warm: jaga edge function send-push tetap panas supaya notif tidak
+    // telat beberapa detik karena cold start.
+    warmPush();
+    const warmIv = setInterval(() => warmPush().catch(() => {}), 5 * 60_000);
 
     // AUTO-CLEAN 24 JAM: kalau database baru dibersihkan (lewat 1 hari),
     // bersihkan juga cache + media di browser biar history benar-benar hilang.
@@ -251,6 +255,7 @@ export default function ChatApp() {
       offTyping();
       offCall();
       clearInterval(syncIv);
+      clearInterval(warmIv);
       window.removeEventListener('focus', onFocus);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -638,7 +643,9 @@ export default function ChatApp() {
   }
 
   // Setelah pesan terkirim: kasih tahu perangkat penerima lewat Web Push.
-  // Konten TIDAK ikut dikirim (cuma judul + badan generik, isi tetap E2E).
+  // `body` berisi cuplikan isi pesan (max ~140 karakter) supaya muncul di
+  // notifikasi. CATATAN: cuplikan ini terlihat server saat mengirim push —
+  // tradeoff agar isi pesan tampil di notif (diminta pengguna).
   async function pushAfterSend(a: { key: string; kind: 'dm' | 'group' }, title: string, body: string) {
     try {
       if (a.kind === 'dm') {
@@ -762,7 +769,7 @@ export default function ChatApp() {
       void pushAfterSend(
         a,
         a.kind === 'dm' ? me!.username : (groupsRef.current.find((g) => g.id === a.key.replace('grp:', ''))?.name ?? 'Grup'),
-        a.kind === 'dm' ? 'Pesan baru' : `Pesan dari ${me!.username}`,
+        a.kind === 'dm' ? text.slice(0, 140) : `${me!.username}: ${text.slice(0, 120)}`,
       );
     } catch (e) {
       patchLocalMsg(a.key, localId, { pending: false, failed: true });
@@ -1096,7 +1103,14 @@ export default function ChatApp() {
               if (ok) {
                 appNotify('NOTIFIKASI AKTIF', 'Push notification aktif di perangkat ini.', { icon: '🔔' });
               } else {
-                const denied = Notification.permission === 'denied';
+              const denied = Notification.permission === 'denied';
+              if (needsIOSInstall()) {
+                appNotify(
+                  'BUTUH DI-PASANG DULU',
+                  'Di iPhone/iPad: ketuk ikon Bagikan (⬆️) di Safari → "Tambah ke Layar Utama", buka NEXUS dari ikon itu, baru ketuk 🔔 lagi.',
+                  { icon: '📲' },
+                );
+              } else {
                 appNotify(
                   'NOTIFIKASI DIBLOKIR',
                   denied
@@ -1104,6 +1118,7 @@ export default function ChatApp() {
                     : 'Notifikasi tidak aktif. Ketuk lagi untuk minta izin, atau pasang app lewat tombol PASANG di atas.',
                   { icon: '🚫' },
                 );
+              }
               }
             }}
             className="relative p-2 rounded-lg text-slate-400 hover:text-neon border border-white/10"

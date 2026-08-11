@@ -15,6 +15,39 @@ export function notifSupported() {
   return 'Notification' in window && 'PushManager' in window;
 }
 
+// iOS Safari hanya mendukung web push kalau situs dipasang ke Home Screen
+// (PWA standalone) sejak iOS 16.4. Di tab Safari biasa PushManager tidak ada.
+export function isIOS() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+export function isIOSStandalone() {
+  return (navigator as any).standalone === true;
+}
+export function needsIOSInstall() {
+  return isIOS() && !isIOSStandalone();
+}
+
+// Keep-warm: panggil edge function send-push tanpa kerja berat biar tidak
+// cold-start (cold start = penyebab utama notif telat beberapa detik).
+export async function warmPush(): Promise<void> {
+  const token = loadToken();
+  if (!token) return;
+  try {
+    await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+        'x-nexus-token': token,
+      },
+      body: JSON.stringify({ warm: true }),
+    });
+  } catch {
+    /* noop */
+  }
+}
+
 // Daftarkan service worker saja, TANPA meminta izin. Permission di browser
 // mobile (Android Chrome & iOS Safari) HANYA bisa diminta dari user gesture,
 // jadi izin diminta via ensurePush() yang dipicu klik tombol 🔔.
@@ -116,7 +149,8 @@ export async function unsubscribePush(): Promise<void> {
 }
 
 // Kirim push ke perangkat penerima lewat edge function `send-push`.
-// Dipanggil SETELAH pesan berhasil terkirim. Gagal tidak mempengaruhi chat.
+// Dipanggil SETELAH pesan berhasil terkirim. `body` = cuplikan isi pesan.
+// Gagal tidak mempengaruhi chat.
 // CATATAN: TIDAK bergantung pada pushActive si pengirim — yang penting penerima
 // yang sudah aktifkan push. Edge function memvalidasi via token + filter target.
 export async function triggerPush(recipientIds: string[], title: string, body: string, url = '/') {
