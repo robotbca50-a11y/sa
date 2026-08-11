@@ -19,6 +19,14 @@ tsconfig.tsbuildinfo
 android/app/src/main/assets/public
 ios/App/App/public
 
+# Keystore signing APK (rahasia — jangan pernah di-commit)
+android/keystore/
+android/keystore.properties
+android/local.properties
+
+# APK hasil build (besar, bisa direproduksi)
+*.apk
+
 
 _sbjs_test.mjs
 supabase/.temp/

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "220282070998",
+    "project_id": "android-sa32",
+    "storage_bucket": "android-sa32.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:220282070998:android:2a0d1f236153099b10a677",
+        "android_client_info": {
+          "package_name": "com.nexus.chat"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDBSGbUWr4cdpPCPqpwNUAMaa830Djnhjs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
