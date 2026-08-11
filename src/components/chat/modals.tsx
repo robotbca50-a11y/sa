@@ -6,6 +6,7 @@ import Avatar, { hashColor, avatarUrl } from '../Avatar';
 import type { User } from '../../types';
 import { useStore } from '../../lib/store';
 import { exportPrivateKeyB64 } from '../../lib/keystore';
+import { antiSadapEnabled, setAntiSadap } from '../AntiSadapOverlay';
 
 export function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
   return (
@@ -171,6 +172,7 @@ export function GhostSettingsModal({ onClose }: { onClose: () => void }) {
   const me = useStore((s) => s.me);
   const [expKey, setExpKey] = useState('');
   const [expMsg, setExpMsg] = useState('');
+  const [antiSadap, setAntiSadapState] = useState(antiSadapEnabled());
 
   async function doExport() {
     setExpMsg('');
@@ -220,6 +222,22 @@ export function GhostSettingsModal({ onClose }: { onClose: () => void }) {
         ))}
       </div>
 
+      <div className="flex items-center justify-between p-3 rounded-lg bg-black/40 border border-white/10 mb-4">
+        <div>
+          <div className="text-sm text-white font-medium">Anti-Sadap</div>
+          <div className="text-xs text-slate-500">Layar langsung hitam saat app di-blur/background — isi chat tak terbaca dari app switcher.</div>
+        </div>
+        <button
+          onClick={() => {
+            const next = !antiSadapEnabled();
+            setAntiSadap(next);
+            setAntiSadapState(next);
+          }}
+          className={`w-12 h-7 rounded-full transition-colors ${antiSadap ? 'bg-lime/60' : 'bg-white/10'}`}
+        >
+          <span className={`block w-5 h-5 rounded-full bg-white transition-transform ${antiSadap ? 'translate-x-6' : 'translate-x-1'}`} />
+        </button>
+      </div>
       <div className="border-t border-white/10 pt-3 mb-4">
         <div className="flex items-center justify-between mb-2">
           <div>

@@ -6,6 +6,7 @@ import Admin from './pages/Admin';
 import ToastHost from './components/ToastHost';
 import VideoLoader from './components/VideoLoader';
 import BlackoutOverlay from './components/BlackoutOverlay';
+import AntiSadapOverlay from './components/AntiSadapOverlay';
 import { useStore } from './lib/store';
 import { loadPrivateKey } from './lib/keystore';
 import { exportPublicRaw } from './lib/crypto';
@@ -104,6 +105,7 @@ export default function App() {
       {view === 'app' && <ChatApp />}
       {view === 'admin' && <Admin />}
       <BlackoutOverlay />
+      <AntiSadapOverlay />
       <ToastHost />
       {!booted && <VideoLoader onDone={() => setBooted(true)} />}
     </>
