@@ -19,6 +19,8 @@
     "@capacitor/ios": "^8.5.0",
     "@capacitor/local-notifications": "^8.2.1",
     "@capacitor/push-notifications": "^8.1.2",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
     "@supabase/supabase-js": "^2.45.4",
     "express": "^5.2.1",
     "framer-motion": "^11.5.4",

@@ -39,6 +39,7 @@ export type Msg = {
   media_path?: string | null;
   media_status?: string | null;
   uploadPct?: number;
+  uploadPhase?: 'compress' | 'upload';
   reply_to?: string | null;
   edited_at?: string | null;
   deleted?: boolean;

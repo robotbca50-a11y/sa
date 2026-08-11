@@ -27,6 +27,7 @@ import { initNotifications, ensurePush, unsubscribePush, persistPushSub, appNoti
 import { initNativePush, unregisterNativePush, testNativePushSelf, isNativeApp } from '../../lib/nativePush';
 import { decodeMessage, evictCache, clearCache, setDecryptPrivateKey } from '../../lib/decrypt';
 import { clearSession, readMsgCache, writeMsgCache, clearChatCache } from '../../lib/session';
+import { prepareMedia } from '../../lib/media';
 import Conversation from '../chat/Conversation';
 import ConversationList from '../chat/ConversationList';
 import { NewChatModal, NewGroupModal, AddMemberModal, GhostSettingsModal, ProfileModal } from '../chat/modals';
@@ -825,28 +826,23 @@ export default function ChatApp() {
           ? 'voice'
           : 'image';
     const localId = crypto.randomUUID();
-    let plan;
-    try {
-      plan = planBigMedia(file);
-    } catch (e) {
-      appNotify('GAGAL MEDIA', toastErr(e), { icon: '⚠️' });
-      return;
-    }
     mediaRetryRef.current.set(localId, { file, replyTo: replyTo ?? null });
     // Bubble langsung muncul di KEDUA sisi (status "uploading"), isi menyusul
-    // setelah file dienkripsi & diunggah ke host media (WA-like).
+    // setelah dikompresi & diunggah ke host media (WA-like).
+    const dummyHeader = '{"p":1}';
     const localMsg: Msg = {
       id: localId,
       conversation_id: a.kind === 'dm' ? a.key.replace('dm:', '') : undefined,
       group_id: a.kind === 'group' ? a.key.replace('grp:', '') : undefined,
       sender_id: me!.id,
       username: me!.username,
-      ciphertext: plan.header,
-      iv: plan.iv,
+      ciphertext: dummyHeader,
+      iv: '',
       msg_type: type,
       media_path: null,
       media_status: 'uploading',
       uploadPct: 0,
+      uploadPhase: 'compress',
       reply_to: replyTo ?? null,
       deleted: false,
       pending: true,
@@ -860,8 +856,8 @@ export default function ChatApp() {
           rpcSendMessage({
             conversationId: a.key.replace('dm:', ''),
             senderId: me!.id,
-            ct: plan.header,
-            iv: plan.iv,
+            ct: dummyHeader,
+            iv: '',
             type,
             replyTo,
             id: localId,
@@ -873,8 +869,8 @@ export default function ChatApp() {
           rpcGroupSend({
             groupId: a.key.replace('grp:', ''),
             senderId: me!.id,
-            ct: plan.header,
-            iv: plan.iv,
+            ct: dummyHeader,
+            iv: '',
             type,
             replyTo,
             id: localId,
@@ -889,18 +885,50 @@ export default function ChatApp() {
       return;
     }
     try {
-      const { path } = await uploadBigMedia(file, k, plan, (sent, total) => {
-        patchLocalMsg(a.key, localId, { uploadPct: total ? Math.round((sent / total) * 100) : 0 });
-      });
-      await rpcRetry(() => rpcSetMediaStatus(localId, 'ready', path));
-      mediaRetryRef.current.delete(localId);
-      patchLocalMsg(a.key, localId, { pending: false, media_status: 'ready', media_path: path });
-      refetchActive();
+      await deliverMedia(a, k, file, type, localId, replyTo ?? null);
       void pushAfterSend(
         a,
         a.kind === 'dm' ? me!.username : (groupsRef.current.find((g) => g.id === a.key.replace('grp:', ''))?.name ?? 'Grup'),
         a.kind === 'dm' ? `📎 ${type}` : `📎 ${type} dari ${me!.username}`,
       );
+    } catch {
+      /* error sudah ditampilkan di deliverMedia */
+    }
+  }
+
+  // Kompres (kalau perlu) → enkripsi chunked → upload → tandai 'ready' (realtime
+  // meng-update penerima). Header asli ditulis ke DB bersama path saat selesai.
+  async function deliverMedia(
+    a: { key: string; kind: 'dm' | 'group' },
+    k: CryptoKey,
+    file: File,
+    type: string,
+    localId: string,
+    replyTo: string | null,
+  ) {
+    try {
+      const blob = await prepareMedia(file, type, (pct) => {
+        patchLocalMsg(a.key, localId, { uploadPct: pct, uploadPhase: 'compress' });
+      });
+      const plan = planBigMedia(blob);
+      patchLocalMsg(a.key, localId, { uploadPct: 0, uploadPhase: 'upload' });
+      const { path } = await uploadBigMedia(blob, k, plan, (sent, total) => {
+        patchLocalMsg(a.key, localId, {
+          uploadPct: total ? Math.round((sent / total) * 100) : 0,
+          uploadPhase: 'upload',
+        });
+      });
+      await rpcRetry(() => rpcSetMediaStatus(localId, 'ready', path, plan.header, plan.iv));
+      mediaRetryRef.current.delete(localId);
+      patchLocalMsg(a.key, localId, {
+        pending: false,
+        media_status: 'ready',
+        media_path: path,
+        ciphertext: plan.header,
+        iv: plan.iv,
+        uploadPct: 100,
+      });
+      refetchActive();
     } catch (e) {
       try {
         await rpcRetry(() => rpcSetMediaStatus(localId, 'failed'));
@@ -909,6 +937,7 @@ export default function ChatApp() {
       }
       patchLocalMsg(a.key, localId, { pending: false, failed: true, media_status: 'failed' });
       appNotify('GAGAL KIRIM MEDIA', toastErr(e), { icon: '⚠️' });
+      throw e;
     }
   }
 
@@ -917,33 +946,13 @@ export default function ChatApp() {
     if (!a) return;
     const k = keyMapRef.current[a.key];
     if (!k) return;
-    patchLocalMsg(a.key, m.id, { pending: true, failed: false, media_status: 'uploading', uploadPct: 0 });
-    let plan;
+    patchLocalMsg(a.key, m.id, { pending: true, failed: false, media_status: 'uploading', uploadPct: 0, uploadPhase: 'compress' });
     try {
-      plan = planBigMedia(file);
-    } catch (e) {
-      patchLocalMsg(a.key, m.id, { pending: false, failed: true, media_status: 'failed' });
-      appNotify('GAGAL MEDIA', toastErr(e), { icon: '⚠️' });
-      return;
+      await rpcRetry(() => rpcSetMediaStatus(m.id, 'uploading'));
+    } catch {
+      /* row sudah ada; status opsional */
     }
-    try {
-      await rpcRetry(() => rpcSetMediaStatus(m.id, 'uploading', null, plan.header, plan.iv));
-      const { path } = await uploadBigMedia(file, k, plan, (sent, total) => {
-        patchLocalMsg(a.key, m.id, { uploadPct: total ? Math.round((sent / total) * 100) : 0 });
-      });
-      await rpcRetry(() => rpcSetMediaStatus(m.id, 'ready', path));
-      mediaRetryRef.current.delete(m.id);
-      patchLocalMsg(a.key, m.id, { pending: false, media_status: 'ready', media_path: path });
-      refetchActive();
-    } catch (e) {
-      try {
-        await rpcRetry(() => rpcSetMediaStatus(m.id, 'failed'));
-      } catch {
-        /* status gagal opsional */
-      }
-      patchLocalMsg(a.key, m.id, { pending: false, failed: true, media_status: 'failed' });
-      appNotify('GAGAL KIRIM MEDIA', toastErr(e), { icon: '⚠️' });
-    }
+    await deliverMedia(a, k, file, m.msg_type, m.id, replyTo);
   }
 
   // ---------- REACT / EDIT / DELETE ----------

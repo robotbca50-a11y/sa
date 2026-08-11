@@ -267,7 +267,11 @@ export default function MessageBubble({
             <div className="flex items-center gap-2 text-xs text-slate-300 font-mono min-w-[200px]">
               <Upload size={13} className="animate-pulse text-neon shrink-0" />
               <span className="truncate">
-                {isMine ? `Mengirim media${msg.uploadPct != null ? `… ${msg.uploadPct}%` : '…'}` : 'Menerima media…'}
+                {isMine
+                  ? msg.uploadPhase === 'compress'
+                    ? `Mengompresi… ${msg.uploadPct != null ? `${msg.uploadPct}%` : ''}`
+                    : `Mengirim media${msg.uploadPct != null ? `… ${msg.uploadPct}%` : '…'}`
+                  : 'Menerima media…'}
               </span>
               {isMine && msg.uploadPct != null && msg.uploadPct > 0 && (
                 <span className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden min-w-[70px]">
