@@ -6,7 +6,7 @@ import { nxRpc } from './api';
 // VAPID public key dari pasangan key yang di-generate untuk NEXUS.
 // Private key-nya dipakai edge function `send-push` (env / bawaan).
 export const VAPID_PUBLIC_KEY =
-  'BFwdxTFwDJGB__zI658UFftiEqtxVNcd_0pzo740H0Cr5hwSK0IAZdHOkT35Qwci-PawfRndPpL6UWIiPi9oGBU';
+  'BCvqpN_i_rOrbBAPO-daH_qM842sebVxaI7w3OzmUl88X6-V0n-f04crvOXceOr0CzDhIcKb54Hmbtms8kcuK20';
 
 let swReady = false;
 let pushActive = false;
@@ -106,8 +106,10 @@ export async function unsubscribePush(): Promise<void> {
 
 // Kirim push ke perangkat penerima lewat edge function `send-push`.
 // Dipanggil SETELAH pesan berhasil terkirim. Gagal tidak mempengaruhi chat.
+// CATATAN: TIDAK bergantung pada pushActive si pengirim — yang penting penerima
+// yang sudah aktifkan push. Edge function memvalidasi via token + filter target.
 export async function triggerPush(recipientIds: string[], title: string, body: string, url = '/') {
-  if (!pushActive) return; // push belum aktif (izin/subscription gagal) — jangan spam edge function
+  if (!recipientIds.length) return;
   const token = loadToken();
   if (!token || !recipientIds.length) return;
   try {
