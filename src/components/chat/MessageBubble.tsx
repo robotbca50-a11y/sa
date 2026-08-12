@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { CornerUpLeft, Smile, Pencil, Trash2, Lock, Clock, Music, RotateCcw, Upload, AlertTriangle } from 'lucide-react';
+import { CornerUpLeft, Smile, Pencil, Trash2, Lock, Clock, Music, RotateCcw, Upload, AlertTriangle, X, Copy } from 'lucide-react';
 import { decodeMessage, evictCache } from '../../lib/decrypt';
 import type { Msg, Reaction } from '../../types';
 import Avatar from '../Avatar';
@@ -54,7 +54,8 @@ export default function MessageBubble({
   const [decodeFailed, setDecodeFailed] = useState(false);
   const [retryTick, setRetryTick] = useState(0);
   const [swipe, setSwipe] = useState(0);
-  const [quick, setQuick] = useState(false);
+  const [menu, setMenu] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
 
   // gesture state
   const startRef = useRef<{ x: number; y: number } | null>(null);
@@ -104,7 +105,8 @@ export default function MessageBubble({
     };
   }, []);
 
-  // ---------- GESTURE: swipe kanan = balas, tahan = reaksi, dobel tap = ❤️ ----------
+  // ---------- GESTURE: swipe kanan = balas, swipe kiri = menu aksi,
+  // tahan = menu aksi (reaksi cepat + hapus), dobel tap = ❤️ ----------
   function gDown(e: React.PointerEvent) {
     if ((e.target as HTMLElement).closest('button, a, textarea, input, video, audio, .no-gesture')) return;
     startRef.current = { x: e.clientX, y: e.clientY };
@@ -116,7 +118,7 @@ export default function MessageBubble({
     longTimerRef.current = window.setTimeout(() => {
       if (startRef.current && !movedRef.current) {
         longFiredRef.current = true;
-        setQuick(true);
+        setMenu(true);
       }
     }, 420);
   }
@@ -148,6 +150,14 @@ export default function MessageBubble({
         swipeDoneRef.current = true;
         setSwipe(0);
         onReply();
+      }
+    }
+    if (dx < -12 && !swipeDoneRef.current) {
+      setSwipe(Math.max(-64, dx * 0.5));
+      if (dx < -56) {
+        swipeDoneRef.current = true;
+        setSwipe(0);
+        setMenu(true);
       }
     }
   }
@@ -224,9 +234,127 @@ export default function MessageBubble({
           <CornerUpLeft size={13} /> Balas
         </div>
       )}
+      {swipe < -8 && (
+        <div
+          className="absolute right-4 top-1/2 -translate-y-1/2 z-10 flex items-center gap-1.5 glass rounded-full px-2.5 py-1.5 text-lime font-mono text-xs pointer-events-none whitespace-nowrap"
+          style={{ opacity: Math.min(1, -swipe / 40) }}
+        >
+          <X size={13} /> Menu
+        </div>
+      )}
 
-      {quick && (
-        <div className="fixed inset-0 z-30" onPointerDown={() => setQuick(false)} />
+      {menu && (
+        <div className="fixed inset-0 z-40">
+          <div className="absolute inset-0 bg-black/60" onPointerDown={() => { setMenu(false); setConfirmDel(false); }} />
+          <motion.div
+            initial={{ y: 140 }}
+            animate={{ y: 0 }}
+            transition={{ type: 'spring', damping: 28, stiffness: 320 }}
+            className="absolute bottom-0 inset-x-0 glass hud-corner rounded-t-2xl p-4 pb-6 max-w-lg mx-auto w-full"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {confirmDel ? (
+              <div className="flex flex-col gap-3">
+                <div className="text-sm text-white font-mono text-center py-1">Hapus pesan ini untuk semua?</div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      onDelete();
+                      setConfirmDel(false);
+                      setMenu(false);
+                    }}
+                    className="flex-1 py-2.5 rounded-lg bg-virus/20 border border-virus/50 text-virus text-sm font-mono hover:bg-virus/30"
+                  >
+                    🗑 HAPUS
+                  </button>
+                  <button
+                    onClick={() => setConfirmDel(false)}
+                    className="flex-1 py-2.5 rounded-lg bg-white/10 text-slate-200 text-sm font-mono hover:bg-white/20"
+                  >
+                    KEMBALI
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex gap-0.5 overflow-x-auto max-w-full">
+                    {REACT_QUICK.map((e) => (
+                      <button
+                        key={e}
+                        className="text-3xl hover:scale-125 transition-transform shrink-0"
+                        onClick={() => {
+                          onReact(e);
+                          setMenu(false);
+                        }}
+                      >
+                        {e}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    className="p-2 rounded-lg text-slate-400 hover:text-white shrink-0"
+                    onClick={() => setMenu(false)}
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="h-px bg-white/10 mb-1" />
+                <div className="flex flex-col">
+                  <button
+                    onClick={() => {
+                      onReply();
+                      setMenu(false);
+                    }}
+                    className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-white hover:bg-white/10"
+                  >
+                    <CornerUpLeft size={15} className="text-neon" /> Balas
+                  </button>
+                  {decoded?.text && (
+                    <button
+                      onClick={() => {
+                        try {
+                          navigator.clipboard?.writeText(decoded.text).catch(() => {});
+                        } catch {
+                          /* clipboard tidak tersedia */
+                        }
+                        setMenu(false);
+                      }}
+                      className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-white hover:bg-white/10"
+                    >
+                      <Copy size={15} className="text-arc-lighter" style={{ color: '#a78bfa' }} /> Salin teks
+                    </button>
+                  )}
+                  {isMine && !decoded?.mediaUrl && (
+                    <button
+                      onClick={() => {
+                        setEditing(true);
+                        setEditText(decoded?.text ?? '');
+                        setMenu(false);
+                      }}
+                      className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-white hover:bg-white/10"
+                    >
+                      <Pencil size={15} className="text-arc-lighter" style={{ color: '#a78bfa' }} /> Edit pesan
+                    </button>
+                  )}
+                  {isMine && (
+                    <button
+                      onClick={() => setConfirmDel(true)}
+                      className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-virus hover:bg-virus/10"
+                    >
+                      <Trash2 size={15} /> Hapus pesan
+                    </button>
+                  )}
+                  {!isMine && (
+                    <div className="px-2 py-2.5 text-xs font-mono text-slate-500">
+                      Hanya pengirim yang bisa menghapus pesan ini.
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </motion.div>
+        </div>
       )}
 
       <div
@@ -245,23 +373,6 @@ export default function MessageBubble({
           setSwipe(0);
         }}
       >
-        {quick && (
-          <div className="absolute -top-12 left-1/2 -translate-x-1/2 z-40 flex items-center gap-0.5 glass rounded-full px-2 py-1.5 hud-corner whitespace-nowrap max-w-[calc(100vw-1rem)] overflow-x-auto">
-            {REACT_QUICK.map((e) => (
-              <button
-                key={e}
-                className="text-2xl hover:scale-125 transition-transform shrink-0"
-                onClick={() => {
-                  onReact(e);
-                  setQuick(false);
-                }}
-              >
-                {e}
-              </button>
-            ))}
-          </div>
-        )}
-
         {!isMine && (
           <div className="flex items-center gap-1.5 mb-0.5 pl-1">
             <Avatar id={senderId} name={senderName} size={16} />

@@ -5,7 +5,9 @@ import NeonButton from '../NeonButton';
 import Avatar, { hashColor, avatarUrl } from '../Avatar';
 import type { User } from '../../types';
 import { useStore } from '../../lib/store';
-import { exportPrivateKeyB64 } from '../../lib/keystore';
+import { exportPrivateKeyB64, savePrivateKey } from '../../lib/keystore';
+import { derivePasswordKey, setPasswordKey, getPasswordKey, decryptText, encryptText } from '../../lib/crypto';
+import { saveSession } from '../../lib/session';
 import { antiSadapEnabled, setAntiSadap } from '../AntiSadapOverlay';
 
 export function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
@@ -272,10 +274,74 @@ export function GhostSettingsModal({ onClose }: { onClose: () => void }) {
 
 export function ProfileModal({ onClose }: { onClose: () => void }) {
   const me = useStore((s) => s.me);
+  const privateKey = useStore((s) => s.privateKey);
   const patchMe = useStore((s) => s.patchMe);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const [newName, setNewName] = useState(me?.username ?? '');
+  const [pass, setPass] = useState('');
+
+  async function changeUsername() {
+    setMsg('');
+    const name = newName.trim();
+    if (!me) return;
+    if (name.length < 2) {
+      setMsg('Username minimal 2 karakter.');
+      return;
+    }
+    if (name === me.username) {
+      setMsg('Username masih sama dengan sekarang.');
+      return;
+    }
+    if (pass.length < 4) {
+      setMsg('Masukkan password akun untuk mengunci perubahan.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const { rpcUpdateUsername } = await import('../../lib/api');
+      const oldPkey = getPasswordKey();
+      await rpcUpdateUsername(name);
+      // Pindahkan kunci privat E2E ke slot username baru (dipakai saat boot).
+      if (privateKey) {
+        try {
+          await savePrivateKey(privateKey, name);
+        } catch {
+          /* kunci tetap aman di slot lama; boot bisa gagal — reload dipaksa */
+        }
+      }
+      // Re-derive kunci password utk backup kunci grup + re-encrypt backup.
+      const newPkey = await derivePasswordKey(pass, name);
+      setPasswordKey(newPkey);
+      if (oldPkey) {
+        try {
+          const { rpcMyGroups, rpcGetGroupKeyBackup, rpcSaveGroupKeyBackup } = await import('../../lib/api');
+          const groups = await rpcMyGroups(me.id).catch(() => []);
+          for (const g of groups) {
+            const bk = await rpcGetGroupKeyBackup(g.id).catch(() => null);
+            if (!bk) continue;
+            const raw = await decryptText(oldPkey, bk.enc_key, bk.iv);
+            const enc = await encryptText(newPkey, raw);
+            await rpcSaveGroupKeyBackup(g.id, enc.ciphertext, enc.iv).catch(() => {});
+          }
+        } catch {
+          /* backup best-effort */
+        }
+      }
+      const updated = { ...me, username: name };
+      saveSession(updated);
+      patchMe({ username: name });
+      setMsg('Username diperbarui.');
+      onClose();
+      // Muat ulang supaya presence, daftar user & key yang dipakai boot ikut terbaru.
+      setTimeout(() => window.location.reload(), 700);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Gagal ganti username.');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function pick(file: File | undefined) {
     setMsg('');
@@ -355,8 +421,36 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
           HAPUS
         </NeonButton>
       </div>
-      <div className="text-[11px] font-mono text-slate-500 text-center">
+      <div className="text-[11px] font-mono text-slate-500 text-center mb-4">
         JPG/PNG/WebP maks 5 MB. Foto tampil di daftar chat & header.
+      </div>
+
+      <div className="h-px bg-white/10 mb-4" />
+      <h4 className="font-mono text-xs text-slate-300 mb-2 tracking-widest">// GANTI USERNAME</h4>
+      <input
+        value={newName}
+        onChange={(e) => setNewName(e.target.value)}
+        placeholder="username baru"
+        maxLength={24}
+        className="w-full px-3 py-2.5 rounded-lg bg-black/40 border border-white/10 focus:border-neon/60 text-white mb-2 text-sm"
+      />
+      <input
+        type="password"
+        value={pass}
+        onChange={(e) => setPass(e.target.value)}
+        placeholder="password akun (konfirmasi)"
+        className="w-full px-3 py-2.5 rounded-lg bg-black/40 border border-white/10 focus:border-neon/60 text-white mb-2 text-sm"
+      />
+      <NeonButton
+        variant="ghost"
+        className="w-full"
+        disabled={busy}
+        onClick={changeUsername}
+      >
+        SIMPAN USERNAME
+      </NeonButton>
+      <div className="text-[11px] font-mono text-slate-500 text-center mt-2">
+        Akun, password, kunci E2E & chat tetap sama — hanya handle yang berubah. Login berikutnya pakai username baru.
       </div>
       {msg && <div className="mt-2 text-xs font-mono text-lime text-center">{msg}</div>}
     </Modal>

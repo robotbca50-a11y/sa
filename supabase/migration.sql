@@ -1089,10 +1089,34 @@ begin
     update public.users set avatar = null where id = v_uid;
     return;
   end if;
-  if p_avatar !~ '^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$' then
+  if p_avatar !~ '^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$' or p_avatar like '%..%' then
     raise exception 'Path avatar tidak valid';
   end if;
   update public.users set avatar = 'avatars/' || p_avatar where id = v_uid;
+end $$;
+
+-- Ganti username akun sendiri (login tetap akun yang sama — id/password/key
+-- tidak berubah; username hanya handle tampilan + identitas login berikutnya).
+create or replace function public.update_username(p_new_username text)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  p_new_username := btrim(coalesce(p_new_username, ''));
+  if length(p_new_username) < 2 then
+    raise exception 'Username minimal 2 karakter';
+  end if;
+  if p_new_username !~ '^[a-zA-Z0-9_.-]+$' then
+    raise exception 'Username hanya boleh huruf, angka, titik, strip, underscore';
+  end if;
+  if exists (select 1 from public.users where username = p_new_username and id <> v_uid) then
+    raise exception 'Username sudah dipakai orang lain';
+  end if;
+  update public.users set username = p_new_username where id = v_uid;
+  insert into public.access_logs (user_id, event, ip) values (v_uid, 'username_changed', public.client_ip());
 end $$;
 
 create or replace function public.get_public_key(p_username text)

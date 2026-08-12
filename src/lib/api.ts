@@ -328,6 +328,11 @@ export async function rpcSetAvatar(pAvatar: string | null) {
   if (error) throw new Error(normalizeErr(error.message));
 }
 
+export async function rpcUpdateUsername(newUsername: string) {
+  const { error } = await nxRpc('update_username', { p_new_username: newUsername });
+  if (error) throw new Error(normalizeErr(error.message));
+}
+
 // ---------- DIRECTORY / DM ----------
 export async function rpcListUsers(): Promise<User[]> {
   const { data, error } = await nxRpc('list_approved_users');
