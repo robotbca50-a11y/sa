@@ -920,6 +920,7 @@ export default function ChatApp() {
       });
       await rpcRetry(() => rpcSetMediaStatus(localId, 'ready', path, plan.header, plan.iv));
       mediaRetryRef.current.delete(localId);
+      evictCache(localId);
       patchLocalMsg(a.key, localId, {
         pending: false,
         media_status: 'ready',

@@ -45,11 +45,12 @@ async function decryptMediaBlob(blob: Blob, key: CryptoKey, msg: Msg, entry: Ent
         const parts: BlobPart[] = [];
         let off = headLen;
         for (let i = 0; i < h.n; i++) {
-          const len = i === h.n - 1 ? h.size - (h.n - 1) * h.ch : h.ch;
-          const ct = await blob.slice(off, off + len).arrayBuffer();
+          // Blok terenkripsi = chunk plaintext + tag AES-GCM 16 byte.
+          const ctLen = i === h.n - 1 ? blob.size - off : h.ch + 16;
+          const ct = await blob.slice(off, off + ctLen).arrayBuffer();
           const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64ToBuf(h.ivs[i]) }, key, ct);
           parts.push(pt);
-          off += len;
+          off += ctLen;
         }
         return new Blob(parts, { type: h.mime || blob.type || 'application/octet-stream' });
       }
