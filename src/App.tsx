@@ -54,7 +54,9 @@ export default function App() {
       let key: CryptoKey | null = null;
       if (user) {
         try {
-          const k = await loadPrivateKey(user.username);
+          const k =
+            (await loadPrivateKey(user.username).catch(() => null)) ??
+            (user.id ? await loadPrivateKey(user.id).catch(() => null) : null);
           if (k) {
             const derived = await exportPublicRaw(k);
             if (derived === user.public_key) key = k;

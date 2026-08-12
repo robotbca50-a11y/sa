@@ -303,14 +303,11 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
       const { rpcUpdateUsername } = await import('../../lib/api');
       const oldPkey = getPasswordKey();
       await rpcUpdateUsername(name);
-      // Pindahkan kunci privat E2E ke slot username baru (dipakai saat boot).
-      if (privateKey) {
-        try {
-          await savePrivateKey(privateKey, name);
-        } catch {
-          /* kunci tetap aman di slot lama; boot bisa gagal — reload dipaksa */
-        }
-      }
+      // Kunci privat E2E dipindah ke slot username BARU + slot id (aman dari
+      // ganti username). Kalau gagal, batalkan — jangan sampai reload logout.
+      if (!privateKey) throw new Error('Kunci E2E tidak tersedia di device ini.');
+      await savePrivateKey(privateKey, name);
+      await savePrivateKey(privateKey, me.id);
       // Re-derive kunci password utk backup kunci grup + re-encrypt backup.
       const newPkey = await derivePasswordKey(pass, name);
       setPasswordKey(newPkey);
@@ -329,7 +326,7 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
           /* backup best-effort */
         }
       }
-      const updated = { ...me, username: name };
+      const updated = { ...me, username: name, avatar: me.avatar ?? null };
       saveSession(updated);
       patchMe({ username: name });
       setMsg('Username diperbarui.');
@@ -360,7 +357,9 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
       const { uploadAvatar, rpcSetAvatar } = await import('../../lib/api');
       const path = await uploadAvatar(me.id, file);
       await rpcSetAvatar(path);
-      patchMe({ avatar: `avatars/${path}` });
+      const avatar = `avatars/${path}`;
+      patchMe({ avatar });
+      saveSession({ ...me, avatar });
       setMsg('Foto profil diperbarui.');
       onClose();
     } catch (e) {
@@ -377,6 +376,7 @@ export function ProfileModal({ onClose }: { onClose: () => void }) {
       const { rpcSetAvatar } = await import('../../lib/api');
       await rpcSetAvatar(null);
       patchMe({ avatar: null });
+      saveSession({ ...me, avatar: null });
       setMsg('Foto profil dihapus.');
       onClose();
     } catch (e) {

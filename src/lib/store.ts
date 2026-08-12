@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { AppView, User } from '../types';
+import { saveSession } from './session';
 
 export type Toast = {
   id: number;
@@ -57,7 +58,13 @@ export const useStore = create<State>((set, get) => ({
 
   setView: (v) => set({ view: v }),
   setSession: (me, privateKey) => set({ me, privateKey }),
-  patchMe: (patch) => set((s) => (s.me ? { me: { ...s.me, ...patch } } : {})),
+  patchMe: (patch) => {
+    const cur = get().me;
+    if (!cur) return;
+    const next = { ...cur, ...patch };
+    set({ me: next });
+    saveSession(next);
+  },
   setOnline: (id, on) =>
     set((s) => ({ onlineSet: { ...s.onlineSet, [id]: on } })),
   setOnlineAll: (map) => set({ onlineSet: map }),

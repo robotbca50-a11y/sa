@@ -21,12 +21,13 @@ import {
   decryptFromSender, importAESKey, bufToB64, encryptForKeys, getPasswordKey,
   exportPublicRaw,
 } from '../../lib/crypto';
+import { savePrivateKey } from '../../lib/keystore';
 import { initPresence, stopPresence } from '../../lib/realtime';
 import { subscribeMessages, subscribeGroupMessages, subscribeReactions, subscribeGroupReactions, onTyping, onCall } from '../../lib/realtime';
 import { initNotifications, ensurePush, unsubscribePush, persistPushSub, appNotify, updateTitle, triggerPush, testPushSelf, warmPush, needsIOSInstall } from '../../lib/notify';
 import { initNativePush, unregisterNativePush, testNativePushSelf, isNativeApp } from '../../lib/nativePush';
 import { decodeMessage, evictCache, clearCache, setDecryptPrivateKey } from '../../lib/decrypt';
-import { clearSession, readMsgCache, writeMsgCache, clearChatCache } from '../../lib/session';
+import { clearSession, readMsgCache, writeMsgCache, clearChatCache, saveSession } from '../../lib/session';
 import { prepareMedia } from '../../lib/media';
 import Conversation from '../chat/Conversation';
 import ConversationList from '../chat/ConversationList';
@@ -83,6 +84,7 @@ function writeCache<T>(key: string, v: T, ttl: number) {
 export default function ChatApp() {
   const me = useStore((s) => s.me);
   const privateKey = useStore((s) => s.privateKey);
+  const patchMe = useStore((s) => s.patchMe);
   const ghostMode = useStore((s) => s.ghostMode);
   const onlineSet = useStore((s) => s.onlineSet);
   const unread = useStore((s) => s.unread);
@@ -195,6 +197,15 @@ export default function ChatApp() {
 
     Promise.all([rpcListUsers(), rpcMyConversations(me.id), rpcMyGroups(me.id), rpcGetAllUserKeys()])
       .then(([us, cv, gr, keys]) => {
+        const dbMe = (us ?? []).find((u) => u.id === me.id);
+        if (dbMe && (dbMe.username !== me.username || dbMe.avatar !== me.avatar)) {
+          const next = { ...me, username: dbMe.username ?? me.username, avatar: dbMe.avatar ?? null };
+          patchMe({ username: next.username, avatar: next.avatar });
+          saveSession(next);
+          if (dbMe.username && dbMe.username !== me.username && privateKey) {
+            savePrivateKey(privateKey, dbMe.username).catch(() => {});
+          }
+        }
         const keyMapById: Record<string, string[]> = {};
         for (const k of keys ?? []) {
           (keyMapById[k.user_id] ??= []).push(k.public_key);
