@@ -74,15 +74,13 @@ export async function decodeMessage(msg: Msg, key: CryptoKey): Promise<Decoded> 
     const text = await decryptText(entry.key, entry.ct, entry.iv);
     out = { text, mediaUrl: null, mediaMime: '' };
   } else if (msg.media_path) {
-    try {
-      const blob = await downloadMedia('chat-media', msg.media_path);
-      const plain = await decryptMediaBlob(blob, key, msg, entry);
-      out = plain
-        ? { text: '', mediaUrl: URL.createObjectURL(plain), mediaMime: plain.type || 'application/octet-stream' }
-        : { text: '', mediaUrl: null, mediaMime: '' };
-    } catch {
-      out = { text: '', mediaUrl: null, mediaMime: '' };
-    }
+    // Jangan telan error: kalau download/dekripsi gagal, lempar supaya bubble
+    // menampilkan "[🔒 Tidak dapat dibaca]" + tombol coba lagi (bukan
+    // "Mendekripsi..." selamanya).
+    const blob = await downloadMedia('chat-media', msg.media_path);
+    const plain = await decryptMediaBlob(blob, key, msg, entry);
+    if (!plain) throw new Error('Media tidak dapat dibaca.');
+    out = { text: '', mediaUrl: URL.createObjectURL(plain), mediaMime: plain.type || 'application/octet-stream' };
   } else {
     out = { text: '🔒 [Pesan terenkripsi]', mediaUrl: null, mediaMime: '' };
   }

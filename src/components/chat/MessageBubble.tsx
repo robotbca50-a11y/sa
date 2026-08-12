@@ -52,6 +52,7 @@ export default function MessageBubble({
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState('');
   const [decodeFailed, setDecodeFailed] = useState(false);
+  const [retryTick, setRetryTick] = useState(0);
   const [swipe, setSwipe] = useState(0);
   const [quick, setQuick] = useState(false);
 
@@ -62,19 +63,40 @@ export default function MessageBubble({
   const swipeDoneRef = useRef(false);
   const longTimerRef = useRef<number | null>(null);
   const lastTapRef = useRef(0);
+  const lastMsgIdRef = useRef<string | null>(null);
+  const autoRetriedRef = useRef(false);
 
   useEffect(() => {
     if (msg.deleted) return;
     let live = true;
+    if (lastMsgIdRef.current !== msg.id) {
+      lastMsgIdRef.current = msg.id;
+      autoRetriedRef.current = false;
+    }
     setDecodeFailed(false);
     decodeMessage(msg, keyObj).then(
       (d) => live && setDecoded(d),
-      () => live && setDecodeFailed(true),
+      () => {
+        if (!live) return;
+        setDecodeFailed(true);
+        // Dekripsi di background: sekali otomatis coba ulang ~4 detik.
+        // Kalau masih gagal, muncul tombol "Coba lagi" manual.
+        if (!autoRetriedRef.current && msg.media_path) {
+          autoRetriedRef.current = true;
+          window.setTimeout(() => {
+            if (!live) return;
+            evictCache(msg.id);
+            setDecoded(null);
+            setDecodeFailed(false);
+            setRetryTick((t) => t + 1);
+          }, 4000);
+        }
+      },
     );
     return () => {
       live = false;
     };
-  }, [msg, keyObj]);
+  }, [msg, keyObj, retryTick]);
 
   useEffect(() => {
     return () => {
@@ -340,6 +362,20 @@ export default function MessageBubble({
           ) : decodeFailed ? (
             <div className="flex items-center gap-2 text-xs text-virus/80 font-mono">
               <Lock size={12} /> [🔒 Tidak dapat dibaca]
+              {msg.media_path && (
+                <button
+                  onClick={() => {
+                    evictCache(msg.id);
+                    setDecoded(null);
+                    setDecodeFailed(false);
+                    setRetryTick((t) => t + 1);
+                  }}
+                  className="px-2 py-0.5 rounded-md bg-white/10 hover:bg-white/20 text-slate-200"
+                  title="Unduh ulang &amp; dekripsi lagi"
+                >
+                  Coba lagi
+                </button>
+              )}
             </div>
           ) : (
             <div className="flex items-center gap-2 text-xs text-slate-500 font-mono">
