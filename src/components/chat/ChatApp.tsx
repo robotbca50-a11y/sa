@@ -14,7 +14,7 @@ import {
   rpcSaveGroupKeyBackup, rpcGetGroupKeyBackup, rpcGetAllUserKeys,
   rpcMarkMessagesRead, rpcMarkGroupMessagesRead,
   rpcLogout, rpcLogAccess, uploadMedia, uploadBigMedia, planBigMedia, rpcSetMediaStatus, toastErr,
-  rpcMaybeCleanup, wipeMediaBucket, wipeBigMedia,
+  rpcMaybeCleanup,
 } from '../../lib/api';
 import {
   deriveSharedKey, encryptText, decryptText, randomAESKey, exportAESKey, encryptToRecipient,
@@ -167,8 +167,6 @@ export default function ChatApp() {
         if (cleaned) {
           clearCache();
           clearChatCache();
-          wipeMediaBucket();
-          wipeBigMedia();
         }
       })
       .catch(() => {});
@@ -1175,6 +1173,12 @@ export default function ChatApp() {
     return m;
   }, [users]);
 
+  const userAvatars = useMemo(() => {
+    const m: Record<string, string | null> = {};
+    users.forEach((u) => (m[u.id] = u.avatar ?? null));
+    return m;
+  }, [users]);
+
   return (
     <div className="app-height relative w-full max-w-full flex flex-col bg-abyss scanlines overflow-hidden">
       <CyberBg />
@@ -1352,6 +1356,7 @@ export default function ChatApp() {
               onAddMember={active.kind === 'group' ? () => setAddMemberFor(active.key.replace('grp:', '')) : undefined}
               groupLocked={active.kind === 'group' ? groupLocked : false}
               userNames={userNames}
+              userAvatars={userAvatars}
               onBack={() => setActive(null)}
             />
           ) : (

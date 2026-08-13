@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { CornerUpLeft, Smile, Pencil, Trash2, Lock, Clock, Music, RotateCcw, Upload, AlertTriangle, X, Copy } from 'lucide-react';
 import { decodeMessage, evictCache } from '../../lib/decrypt';
 import type { Msg, Reaction } from '../../types';
-import Avatar from '../Avatar';
+import Avatar, { avatarUrl } from '../Avatar';
 import EmojiPicker from './EmojiPicker';
 
 function fmtTime(iso: string) {
@@ -20,6 +20,7 @@ export default function MessageBubble({
   isMine,
   senderName,
   senderId,
+  senderAvatar,
   replyPreview,
   reactions,
   ghostOn,
@@ -36,6 +37,7 @@ export default function MessageBubble({
   isMine: boolean;
   senderName: string;
   senderId: string;
+  senderAvatar?: string | null;
   replyPreview?: string | null;
   reactions: Reaction[];
   ghostOn: boolean;
@@ -375,7 +377,7 @@ export default function MessageBubble({
       >
         {!isMine && (
           <div className="flex items-center gap-1.5 mb-0.5 pl-1">
-            <Avatar id={senderId} name={senderName} size={16} />
+            <Avatar id={senderId} name={senderName} size={16} src={avatarUrl(senderAvatar)} />
             <span className="text-[10px] font-mono text-slate-400">{displayName}</span>
           </div>
         )}

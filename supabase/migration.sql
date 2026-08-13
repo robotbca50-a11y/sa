@@ -2220,15 +2220,10 @@ begin
   if v_last is not null and v_last > now() - interval '24 hours' then
     return false;
   end if;
-  delete from public.group_reactions;
-  delete from public.reactions;
-  delete from public.group_messages;
-  delete from public.messages;
-  delete from public.group_key_backups;
-  delete from public.group_keys;
-  delete from public.group_members;
-  delete from public.group_chats;
-  delete from public.conversations;
+  -- PEMBERSIHAN HARIAN: hanya data sementara (stories, reels, lokasi, log).
+  -- Riwayat chat (pesan, percakapan, reaksi, kunci grup, backup kunci) TIDAK
+  -- dihapus: isinya ciphertext (E2E) dan dibutuhkan agar riwayat tetap bisa
+  -- dibuka ulang/dibaca di perangkat lain.
   delete from public.story_views;
   delete from public.stories;
   delete from public.reels;

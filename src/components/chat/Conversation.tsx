@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Phone, UserPlus, Lock, Info, Users } from 'lucide-react';
+import { ArrowLeft, Phone, UserPlus, Lock, Info, Users, ChevronDown } from 'lucide-react';
 import { motion } from 'framer-motion';
 import MessageBubble from './MessageBubble';
 import ChatInput from './ChatInput';
@@ -32,6 +32,7 @@ export default function Conversation({
   onAddMember,
   groupLocked,
   userNames,
+  userAvatars,
   onBack,
 }: {
   kind: 'dm' | 'group';
@@ -55,17 +56,46 @@ export default function Conversation({
   onAddMember?: () => void;
   groupLocked?: boolean;
   userNames: Record<string, string>;
+  userAvatars?: Record<string, string | null>;
   onBack: () => void;
 }) {
   const me = useStore((s) => s.me);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pinnedRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
   const [replyingTo, setReplyingTo] = useState<{ id: string; preview: string } | null>(null);
   const [previews, setPreviews] = useState<Record<string, string>>({});
   const [groupInfo, setGroupInfo] = useState(false);
 
+  // Ganti percakapan → selalu mulai dari bawah.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    pinnedRef.current = true;
+    setShowJump(false);
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [convKey]);
+
+  // Auto-scroll ke bawah HANYA kalau user masih di dasar; kalau sudah scroll
+  // ke atas (baca pesan lama), posisi dibiarkan.
+  useEffect(() => {
+    if (pinnedRef.current) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages.length, typing.length]);
+
+  function onScroll() {
+    const el = scrollRef.current;
+    if (!el) return;
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 80;
+    pinnedRef.current = atBottom;
+    setShowJump(!atBottom);
+  }
+
+  function jumpToBottom() {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    pinnedRef.current = true;
+    setShowJump(false);
+  }
 
   useEffect(() => {
     let live = true;
@@ -162,7 +192,7 @@ export default function Conversation({
       )}
 
       {/* messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden py-3 space-y-1 relative">
+      <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto overflow-x-hidden py-3 space-y-1 relative">
         {messages.length === 0 && (
           <div className="h-full flex flex-col items-center justify-center text-slate-600">
             <div className="text-4xl mb-3">🔐</div>
@@ -178,6 +208,7 @@ export default function Conversation({
             isMine={m.sender_id === me?.id}
             senderName={m.username ?? 'user'}
             senderId={m.sender_id}
+            senderAvatar={userAvatars?.[m.sender_id]}
             replyPreview={previews[m.id]}
             reactions={reactions[m.id] ?? []}
             ghostOn={ghostOn}
@@ -199,6 +230,15 @@ export default function Conversation({
           <div className="px-3">
             <TypingDots label={`${typing.join(', ')}`} />
           </div>
+        )}
+        {showJump && (
+          <button
+            onClick={jumpToBottom}
+            className="absolute bottom-4 right-4 z-10 p-2.5 rounded-full bg-neon/90 text-black border border-neon shadow-[0_0_16px_rgba(0,240,255,0.5)]"
+            title="Ke pesan terbaru"
+          >
+            <ChevronDown size={18} />
+          </button>
         )}
       </div>
 
