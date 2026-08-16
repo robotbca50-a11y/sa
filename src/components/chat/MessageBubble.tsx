@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
 import { CornerUpLeft, Smile, Pencil, Trash2, Lock, Clock, Music, RotateCcw, Upload, AlertTriangle, X, Copy } from 'lucide-react';
 import { decodeMessage, evictCache } from '../../lib/decrypt';
@@ -245,119 +246,121 @@ export default function MessageBubble({
         </div>
       )}
 
-      {menu && (
-        <div className="fixed inset-0 z-40">
-          <div className="absolute inset-0 bg-black/60" onPointerDown={() => { setMenu(false); setConfirmDel(false); }} />
-          <motion.div
-            initial={{ y: 140 }}
-            animate={{ y: 0 }}
-            transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-            className="absolute bottom-0 inset-x-0 glass hud-corner rounded-t-2xl p-4 pb-6 max-w-lg mx-auto w-full"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {confirmDel ? (
-              <div className="flex flex-col gap-3">
-                <div className="text-sm text-white font-mono text-center py-1">Hapus pesan ini untuk semua?</div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => {
-                      onDelete();
-                      setConfirmDel(false);
-                      setMenu(false);
-                    }}
-                    className="flex-1 py-2.5 rounded-lg bg-virus/20 border border-virus/50 text-virus text-sm font-mono hover:bg-virus/30"
-                  >
-                    🗑 HAPUS
-                  </button>
-                  <button
-                    onClick={() => setConfirmDel(false)}
-                    className="flex-1 py-2.5 rounded-lg bg-white/10 text-slate-200 text-sm font-mono hover:bg-white/20"
-                  >
-                    KEMBALI
-                  </button>
+      {menu &&
+        createPortal(
+          <div className="fixed inset-0 z-40">
+            <div className="absolute inset-0 bg-black/60" onPointerDown={() => { setMenu(false); setConfirmDel(false); }} />
+            <motion.div
+              initial={{ y: 140 }}
+              animate={{ y: 0 }}
+              transition={{ type: 'spring', damping: 28, stiffness: 320 }}
+              className="absolute bottom-0 inset-x-0 glass hud-corner rounded-t-2xl p-4 pb-6 max-w-lg mx-auto w-full"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {confirmDel ? (
+                <div className="flex flex-col gap-3">
+                  <div className="text-sm text-white font-mono text-center py-1">Hapus pesan ini untuk semua?</div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        onDelete();
+                        setConfirmDel(false);
+                        setMenu(false);
+                      }}
+                      className="flex-1 py-2.5 rounded-lg bg-virus/20 border border-virus/50 text-virus text-sm font-mono hover:bg-virus/30"
+                    >
+                      🗑 HAPUS
+                    </button>
+                    <button
+                      onClick={() => setConfirmDel(false)}
+                      className="flex-1 py-2.5 rounded-lg bg-white/10 text-slate-200 text-sm font-mono hover:bg-white/20"
+                    >
+                      KEMBALI
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <>
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex gap-0.5 overflow-x-auto max-w-full">
-                    {REACT_QUICK.map((e) => (
+              ) : (
+                <>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex gap-0.5 overflow-x-auto max-w-full">
+                      {REACT_QUICK.map((e) => (
+                        <button
+                          key={e}
+                          className="text-3xl hover:scale-125 transition-transform shrink-0"
+                          onClick={() => {
+                            onReact(e);
+                            setMenu(false);
+                          }}
+                        >
+                          {e}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      className="p-2 rounded-lg text-slate-400 hover:text-white shrink-0"
+                      onClick={() => setMenu(false)}
+                    >
+                      <X size={18} />
+                    </button>
+                  </div>
+                  <div className="h-px bg-white/10 mb-1" />
+                  <div className="flex flex-col">
+                    <button
+                      onClick={() => {
+                        onReply();
+                        setMenu(false);
+                      }}
+                      className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-white hover:bg-white/10"
+                    >
+                      <CornerUpLeft size={15} className="text-neon" /> Balas
+                    </button>
+                    {decoded?.text && (
                       <button
-                        key={e}
-                        className="text-3xl hover:scale-125 transition-transform shrink-0"
                         onClick={() => {
-                          onReact(e);
+                          try {
+                            navigator.clipboard?.writeText(decoded.text).catch(() => {});
+                          } catch {
+                            /* clipboard tidak tersedia */
+                          }
                           setMenu(false);
                         }}
+                        className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-white hover:bg-white/10"
                       >
-                        {e}
+                        <Copy size={15} className="text-arc-lighter" style={{ color: '#a78bfa' }} /> Salin teks
                       </button>
-                    ))}
+                    )}
+                    {isMine && !decoded?.mediaUrl && (
+                      <button
+                        onClick={() => {
+                          setEditing(true);
+                          setEditText(decoded?.text ?? '');
+                          setMenu(false);
+                        }}
+                        className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-white hover:bg-white/10"
+                      >
+                        <Pencil size={15} className="text-arc-lighter" style={{ color: '#a78bfa' }} /> Edit pesan
+                      </button>
+                    )}
+                    {isMine && (
+                      <button
+                        onClick={() => setConfirmDel(true)}
+                        className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-virus hover:bg-virus/10"
+                      >
+                        <Trash2 size={15} /> Hapus pesan
+                      </button>
+                    )}
+                    {!isMine && (
+                      <div className="px-2 py-2.5 text-xs font-mono text-slate-500">
+                        Hanya pengirim yang bisa menghapus pesan ini.
+                      </div>
+                    )}
                   </div>
-                  <button
-                    className="p-2 rounded-lg text-slate-400 hover:text-white shrink-0"
-                    onClick={() => setMenu(false)}
-                  >
-                    <X size={18} />
-                  </button>
-                </div>
-                <div className="h-px bg-white/10 mb-1" />
-                <div className="flex flex-col">
-                  <button
-                    onClick={() => {
-                      onReply();
-                      setMenu(false);
-                    }}
-                    className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-white hover:bg-white/10"
-                  >
-                    <CornerUpLeft size={15} className="text-neon" /> Balas
-                  </button>
-                  {decoded?.text && (
-                    <button
-                      onClick={() => {
-                        try {
-                          navigator.clipboard?.writeText(decoded.text).catch(() => {});
-                        } catch {
-                          /* clipboard tidak tersedia */
-                        }
-                        setMenu(false);
-                      }}
-                      className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-white hover:bg-white/10"
-                    >
-                      <Copy size={15} className="text-arc-lighter" style={{ color: '#a78bfa' }} /> Salin teks
-                    </button>
-                  )}
-                  {isMine && !decoded?.mediaUrl && (
-                    <button
-                      onClick={() => {
-                        setEditing(true);
-                        setEditText(decoded?.text ?? '');
-                        setMenu(false);
-                      }}
-                      className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-white hover:bg-white/10"
-                    >
-                      <Pencil size={15} className="text-arc-lighter" style={{ color: '#a78bfa' }} /> Edit pesan
-                    </button>
-                  )}
-                  {isMine && (
-                    <button
-                      onClick={() => setConfirmDel(true)}
-                      className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-virus hover:bg-virus/10"
-                    >
-                      <Trash2 size={15} /> Hapus pesan
-                    </button>
-                  )}
-                  {!isMine && (
-                    <div className="px-2 py-2.5 text-xs font-mono text-slate-500">
-                      Hanya pengirim yang bisa menghapus pesan ini.
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
-          </motion.div>
-        </div>
-      )}
+                </>
+              )}
+            </motion.div>
+          </div>,
+          document.body,
+        )}
 
       <div
         className={`max-w-[94%] sm:max-w-[85%] lg:max-w-[78%] relative transition-transform duration-150`}
