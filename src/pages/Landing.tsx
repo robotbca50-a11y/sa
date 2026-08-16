@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { useRef, useState } from 'react';
 import { motion, useScroll, useTransform } from 'framer-motion';
 import {
@@ -61,7 +68,7 @@ export default function Landing() {
       <CyberCanvas />
       <div className="grid-floor absolute inset-0 z-0" />
 
-      {/* NAV */}
+      {}
       <nav className="relative z-40 flex items-center justify-between px-5 sm:px-10 py-5 max-w-7xl mx-auto">
         <div className="flex items-center gap-2 font-mono">
           <span className="w-3 h-3 rounded-full bg-neon animate-pulseglow" />
@@ -75,7 +82,7 @@ export default function Landing() {
         </div>
       </nav>
 
-      {/* HERO */}
+      {}
       <div ref={hero} className="relative z-30 max-w-7xl mx-auto px-5 sm:px-10 pt-16 pb-10">
         <motion.div style={{ y: yBg, opacity }} className="text-center">
           <motion.div
@@ -115,7 +122,7 @@ export default function Landing() {
           </div>
         </motion.div>
 
-        {/* FEATURE GRID */}
+        {}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mt-20 pb-4">
           {FEATURES.map((f, i) => (
             <motion.div
@@ -137,7 +144,7 @@ export default function Landing() {
         </div>
       </div>
 
-      {/* FOOTER */}
+      {}
       <footer className="relative z-30 border-t border-white/10 py-6 text-center font-mono text-xs text-slate-500">
         NEXUS // chat terenkripsi — pesan kamu, kunci kamu. <span className="text-neon">Server bodoh.</span>
       </footer>

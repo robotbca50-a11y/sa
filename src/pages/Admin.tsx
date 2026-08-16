@@ -1,17 +1,25 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { ShieldCheck, Users, MapPin, ScrollText, Check, X, LogOut, ArrowLeft, Trash2, Power } from 'lucide-react';
+import { ShieldCheck, Users, MapPin, ScrollText, Check, X, LogOut, ArrowLeft, Trash2, Power, Flag, Ban } from 'lucide-react';
 import { useStore } from '../lib/store';
 import {
   rpcPendingUsers, rpcSetUserStatus, rpcAllLocations, rpcAccessLogs, rpcUserStats,
   rpcAllUsers, rpcDeleteUser, rpcPurgeAllUsers, rpcListBlackouts, rpcSetBlackout,
+  rpcAdminReports, rpcResolveReport,
 } from '../lib/api';
 import { sendBlackout } from '../lib/realtime';
 import NeonButton from '../components/NeonButton';
 import CyberCanvas from '../components/CyberCanvas';
-import type { AccessLog, LocRow, User } from '../types';
+import type { AccessLog, LocRow, User, ReportRow } from '../types';
 
 function gmLink(lat: number, lng: number) {
   return `https://www.google.com/maps?q=${lat},${lng}`;
@@ -23,10 +31,11 @@ export default function Admin() {
   const [u, setU] = useState('');
   const [p, setP] = useState('');
   const [err, setErr] = useState('');
-  const [tab, setTab] = useState<'approve' | 'map' | 'logs' | 'users'>('approve');
+  const [tab, setTab] = useState<'approve' | 'map' | 'logs' | 'users' | 'reports'>('approve');
   const [pending, setPending] = useState<User[]>([]);
   const [locs, setLocs] = useState<LocRow[]>([]);
   const [logs, setLogs] = useState<AccessLog[]>([]);
+  const [reports, setReports] = useState<ReportRow[]>([]);
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [blackouts, setBlackouts] = useState<string[]>([]);
   const [stats, setStats] = useState<{ total: number; pending: number; online: number; today: number }>({ total: 0, pending: 0, online: 0, today: 0 });
@@ -49,7 +58,6 @@ export default function Admin() {
     }
   }
 
-  // Jeda kecil antar panggilan biar tidak membebani rate limit.
   const pause = (ms = 250) => new Promise((r) => setTimeout(r, ms));
 
   async function refreshAll() {
@@ -67,6 +75,12 @@ export default function Admin() {
       await pause();
       const st = await rpcUserStats(c.u, c.p);
       setStats(st);
+      await pause();
+      try {
+        const rp = await rpcAdminReports(c.u, c.p);
+        setReports(rp);
+      } catch {
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setLogged(false);
@@ -79,7 +93,6 @@ export default function Admin() {
         const bl = await rpcListBlackouts(c.u, c.p);
         setBlackouts(bl.map((b) => b.target_user_id));
       } catch {
-        /* versi lama tanpa kill screen */
       }
       setErr('');
     } catch (e) {
@@ -189,6 +202,17 @@ export default function Admin() {
     }
   }
 
+  async function resolveReport(id: string, status: string) {
+    setErr('');
+    try {
+      const c = cred();
+      await rpcResolveReport(c.u, c.p, id, status);
+      refreshAll();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   function logout() {
     sessionStorage.removeItem('nexus:master');
     setLogged(false);
@@ -254,6 +278,7 @@ export default function Admin() {
             { id: 'users', label: `USERS (${allUsers.length})`, icon: ShieldCheck },
             { id: 'map', label: `LIVE MAP (${locs.length})`, icon: MapPin },
             { id: 'logs', label: 'ACCESS LOG', icon: ScrollText },
+            { id: 'reports', label: `LAPORAN (${reports.length})`, icon: Flag },
           ] as const).map((t) => (
             <button
               key={t.id}
@@ -393,6 +418,42 @@ export default function Admin() {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {tab === 'reports' && (
+          <div className="space-y-2">
+            {err && <div className="mb-3 text-xs font-mono text-virus bg-virus/10 border border-virus/30 rounded-lg px-3 py-2">{err}</div>}
+            {reports.length === 0 && <div className="glass rounded-xl p-6 text-center font-mono text-sm text-slate-500">Tidak ada laporan terbuka.</div>}
+            {reports.map((r) => (
+              <div key={r.id} className="glass rounded-xl p-4 flex items-start gap-3 flex-wrap">
+                <div className="p-2 rounded-lg bg-virus/15 border border-virus/40 text-virus shrink-0">
+                  <Flag size={16} />
+                </div>
+                <div className="flex-1 min-w-[200px]">
+                  <div className="text-white text-sm font-medium">
+                    {r.reporter_username} <span className="text-slate-500 font-mono text-xs">melapor</span> {r.target_username}
+                  </div>
+                  <div className="font-mono text-[11px] text-slate-400 mt-0.5">alasan: <span className="text-amber">{r.reason}</span></div>
+                  {r.detail && <div className="font-mono text-[11px] text-slate-500 mt-0.5">detail: {r.detail}</div>}
+                  <div className="font-mono text-[10px] text-slate-600 mt-1">{new Date(r.created_at).toLocaleString('id-ID')}</div>
+                </div>
+                <div className="flex gap-2 items-center">
+                  <button
+                    onClick={() => resolveReport(r.id, 'banned')}
+                    className="px-3 py-1.5 rounded-lg bg-virus/15 border border-virus/40 text-virus text-xs font-mono hover:bg-virus/25"
+                  >
+                    <Ban size={14} className="inline mr-1" />BAN
+                  </button>
+                  <button
+                    onClick={() => resolveReport(r.id, 'dismissed')}
+                    className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/15 text-slate-300 text-xs font-mono hover:bg-white/10"
+                  >
+                    <Check size={14} className="inline mr-1" />ABAIKAN
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>

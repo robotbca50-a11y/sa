@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { useMemo } from 'react';
 
 export default function CyberBg() {

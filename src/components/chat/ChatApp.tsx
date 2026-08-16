@@ -1,8 +1,15 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Ghost, Bell, LogOut, MessageSquare, MonitorPlay,
-  Music, Download, Send,
+  Music, Download, Send, Sparkles,
 } from 'lucide-react';
 import { useStore } from '../../lib/store';
 import {
@@ -14,7 +21,8 @@ import {
   rpcSaveGroupKeyBackup, rpcGetGroupKeyBackup, rpcGetAllUserKeys,
   rpcMarkMessagesRead, rpcMarkGroupMessagesRead,
   rpcLogout, rpcLogAccess, uploadMedia, uploadBigMedia, planBigMedia, rpcSetMediaStatus, toastErr,
-  rpcMaybeCleanup,
+  rpcGetSessionEpoch, rpcAiBrainGet, rpcAiBrainSave,
+  rpcMaybeCleanup, downloadMedia,
 } from '../../lib/api';
 import {
   deriveSharedKey, encryptText, decryptText, randomAESKey, exportAESKey, encryptToRecipient,
@@ -23,22 +31,28 @@ import {
 } from '../../lib/crypto';
 import { savePrivateKey } from '../../lib/keystore';
 import { initPresence, stopPresence } from '../../lib/realtime';
-import { subscribeMessages, subscribeGroupMessages, subscribeReactions, subscribeGroupReactions, onTyping, onCall } from '../../lib/realtime';
+import { subscribeMessages, subscribeGroupMessages, subscribeReactions, subscribeGroupReactions, onTyping, onCall, onGroupCall } from '../../lib/realtime';
 import { initNotifications, ensurePush, unsubscribePush, persistPushSub, appNotify, updateTitle, triggerPush, testPushSelf, warmPush, needsIOSInstall } from '../../lib/notify';
+import {
+  brainLearn, brainMerge, brainExport, brainDirty, brainMarkPushed,
+} from '../../lib/brain';
 import { initNativePush, unregisterNativePush, testNativePushSelf, isNativeApp } from '../../lib/nativePush';
 import { decodeMessage, evictCache, clearCache, setDecryptPrivateKey } from '../../lib/decrypt';
 import { clearSession, readMsgCache, writeMsgCache, clearChatCache, saveSession } from '../../lib/session';
 import { prepareMedia } from '../../lib/media';
 import { getDisappearSeconds, cycleDisappear } from '../../lib/disappear';
 import { isPinned, togglePin } from '../../lib/pins';
+import { isBlocked, isMuted, noteLastSeen, getNotifPrivacy, toggleBlocked, toggleMuted, usePrivacyVersion, getLastSeen, formatLastSeen } from '../../lib/privacy';
 import Conversation from '../chat/Conversation';
 import ConversationList from '../chat/ConversationList';
-import { NewChatModal, NewGroupModal, AddMemberModal, GhostSettingsModal, ProfileModal } from '../chat/modals';
+import { NewChatModal, NewGroupModal, AddMemberModal, GhostSettingsModal, ProfileModal, ForwardPicker } from '../chat/modals';
 import Avatar, { avatarUrl } from '../Avatar';
 import Stories from '../features/Stories';
 import Reels from '../features/Reels';
 import WatchParty from '../features/WatchParty';
 import VideoCall, { IncomingCallOverlay } from '../features/VideoCall';
+import GroupVideoCall, { IncomingGroupCallOverlay } from '../features/GroupVideoCall';
+import AiPanel from '../features/AiPanel';
 import InstallBanner from '../InstallBanner';
 import { showInstallBanner } from '../../lib/install';
 import CyberBg from './CyberBg';
@@ -79,7 +93,6 @@ function writeCache<T>(key: string, v: T, ttl: number) {
   try {
     localStorage.setItem(key, JSON.stringify({ t: Date.now(), ttl, v }));
   } catch {
-    /* storage penuh — abaikan */
   }
 }
 
@@ -104,10 +117,14 @@ export default function ChatApp() {
   const [reactMap, setReactMap] = useState<Record<string, Reaction[]>>({});
   const [typing, setTyping] = useState<Record<string, string[]>>({});
   const [tab, setTab] = useState<'chats' | 'reels' | 'watch'>('chats');
-  const [modal, setModal] = useState<null | 'newchat' | 'newgroup' | 'ghost' | 'profile'>(null);
+  const [modal, setModal] = useState<null | 'newchat' | 'newgroup' | 'ghost' | 'profile' | 'ai'>(null);
   const [addMemberFor, setAddMemberFor] = useState<string | null>(null);
   const [groupMembers, setGroupMembers] = useState<Record<string, User[]>>({});
   const [call, setCall] = useState<{ mode: 'caller' | 'callee'; peer: User } | null>(null);
+  const [groupCall, setGroupCall] = useState<{ mode: 'caller' | 'callee'; callId: string; groupId: string; groupName: string; initiator: string; members: User[] } | null>(null);
+  const [incomingGroupCall, setIncomingGroupCall] = useState<{ callId: string; groupId: string; groupName: string; initiator: string; members: User[] } | null>(null);
+  const [forwardMsg, setForwardMsg] = useState<Msg | null>(null);
+  const [broadcastOpen, setBroadcastOpen] = useState(false);
 
   const meRef = useRef(me);
   const keyRef = useRef(privateKey);
@@ -119,13 +136,13 @@ export default function ChatApp() {
   const userMapRef = useRef<Record<string, string>>({});
   const userKeysRef = useRef<Record<string, string[]>>({});
   const inCallRef = useRef(false);
+  const groupCallRef = useRef<typeof groupCall>(null);
+  const incomingGroupCallRef = useRef<typeof incomingGroupCall>(null);
   const mediaRetryRef = useRef(new Map<string, { file: File; replyTo: string | null }>());
-  // Pesan sementara (self-destruct): msgId → waktu kedaluwarsa + kunci percakapan.
   const expiryRef = useRef<Record<string, { at: number; key: string }>>({});
-  // Tombstone lokal agar pesan yang sudah kedaluwarsa tidak muncul lagi saat
-  // daftar pesan di-refetch dari server (persisten, dibatasi jumlahnya).
   const tombRef = useRef<Set<string>>(new Set(JSON.parse(localStorage.getItem('nexus:expired') || '[]')));
   const [nowTick, setNowTick] = useState(0);
+  const [seenVer, setSeenVer] = useState(0);
 
   meRef.current = me;
   keyRef.current = privateKey;
@@ -135,36 +152,54 @@ export default function ChatApp() {
   msgMapRef.current = msgMap;
   keyMapRef.current = keyMap;
   userMapRef.current = Object.fromEntries(users.map((u) => [u.id, u.username]));
+  groupCallRef.current = groupCall;
+  incomingGroupCallRef.current = incomingGroupCall;
 
   useEffect(() => {
     setDecryptPrivateKey(privateKey ?? null);
   }, [privateKey]);
 
-  // Tick per detik agar daftar pesan re-render saat ada pesan yang kedaluwarsa.
   useEffect(() => {
     const iv = setInterval(() => setNowTick((t) => t + 1), 1000);
     return () => clearInterval(iv);
   }, []);
 
-  // ---------- LOAD ----------
+  const lastSeenWrittenRef = useRef<Record<string, number>>({});
+  useEffect(() => {
+    const now = Date.now();
+    let changed = false;
+    for (const id of Object.keys(onlineSet)) {
+      if (onlineSet[id] && (lastSeenWrittenRef.current[id] ?? 0) + 30_000 < now) {
+        lastSeenWrittenRef.current[id] = now;
+        noteLastSeen(id);
+        changed = true;
+      }
+    }
+    if (changed) setSeenVer((v) => v + 1);
+  }, [onlineSet]);
+
   useEffect(() => {
     if (!me || !privateKey) return;
     initPresence();
-    // Daftarkan service worker SAJA. Izin push diminta via tombol 🔔 (user
-    // gesture) — browser mobile memblokir request permission tanpa klik.
     initNotifications().catch(() => {});
-    // Self-heal: kalau izin sudah granted, pastikan subscription perangkat ini
-    // tetap ada di DB (kalau sempat hilang, dipasang ulang otomatis).
     persistPushSub().catch(() => {});
     rpcLogAccess(me.id, 'open').catch(() => {});
-    // Keep-warm: jaga edge function send-push tetap panas supaya notif tidak
-    // telat beberapa detik karena cold start.
     warmPush();
     const warmIv = setInterval(() => warmPush().catch(() => {}), 5 * 60_000);
 
-    // Notifikasi NATIVE (APK): daftarkan token FCM + listener. Di browser ini
-    // no-op. Notif native muncul via OS saat app di background; saat app
-    // terbuka, event pushNotificationReceived diterjemahkan jadi toast.
+    let epoch = 0;
+    rpcGetSessionEpoch()
+      .then((e) => (epoch = e))
+      .catch(() => {});
+    const epochIv = setInterval(() => {
+      rpcGetSessionEpoch()
+        .then((e) => {
+          if (epoch > 0 && e > epoch) window.dispatchEvent(new Event('nexus:logout'));
+          epoch = e;
+        })
+        .catch(() => {});
+    }, 60_000);
+
     initNativePush(
       (m) => appNotify(m.title, m.body, { icon: '📲' }),
       (m) => {
@@ -174,8 +209,6 @@ export default function ChatApp() {
       },
     ).catch(() => {});
 
-    // AUTO-CLEAN 24 JAM: kalau database baru dibersihkan (lewat 1 hari),
-    // bersihkan juga cache + media di browser biar history benar-benar hilang.
     rpcMaybeCleanup()
       .then((cleaned) => {
         if (cleaned) {
@@ -250,7 +283,6 @@ export default function ChatApp() {
       })
       .catch((e) => appNotify('GAGAL MUAT DATA', toastErr(e), { icon: '⚠️' }));
 
-    // ---------- SUBSCRIPTIONS ----------
     const subs = [
       subscribeMessages((m, kind) => onDmEvent(m as Msg, kind)),
       subscribeGroupMessages((m, kind) => onGroupEvent(m as Msg, kind)),
@@ -283,6 +315,31 @@ export default function ChatApp() {
       }
     });
 
+    const offGCall = onGroupCall((event, data) => {
+      const meId = meRef.current?.id;
+      if (!meId) return;
+      if (event === 'start') {
+        if (data.from === meId) return;
+        if (call || groupCallRef.current || inCallRef.current) return;
+        if (!groupsRef.current.some((g) => g.id === data.groupId)) return;
+        const g = groupsRef.current.find((x) => x.id === data.groupId);
+        const mems: User[] = (data.members ?? []).map((id: string) => {
+          const u = users.find((x) => x.id === id);
+          return u ?? { id, username: id.slice(0, 8) };
+        });
+        const inc = { callId: data.callId, groupId: data.groupId, groupName: g?.name ?? 'Grup', initiator: data.from, members: mems };
+        incomingGroupCallRef.current = inc;
+        setIncomingGroupCall(inc);
+        appNotify('Video call grup', `${inc.groupName} — ada panggilan masuk`, { icon: '📞' });
+      }
+      if (event === 'hangup') {
+        if (incomingGroupCallRef.current && data.from === incomingGroupCallRef.current.initiator) {
+          incomingGroupCallRef.current = null;
+          setIncomingGroupCall(null);
+        }
+      }
+    });
+
     const syncAll = () => {
       refreshDms();
       const meId = meRef.current?.id;
@@ -300,12 +357,54 @@ export default function ChatApp() {
       subs.forEach((s) => s.unsubscribe());
       offTyping();
       offCall();
+      offGCall();
       clearInterval(syncIv);
       clearInterval(warmIv);
+      clearInterval(epochIv);
       window.removeEventListener('focus', onFocus);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    let deb: ReturnType<typeof setTimeout> | null = null;
+    const tick = async () => {
+      try {
+        const remote = await rpcAiBrainGet();
+        if (!active) return;
+        if (remote && remote.payload) {
+          brainMerge({
+            payload: remote.payload,
+            trained: remote.trained,
+            updatedAt: new Date(remote.updated_at ?? 0).getTime(),
+          });
+        }
+        if (brainDirty()) {
+          const ex = brainExport();
+          await rpcAiBrainSave(ex.payload, ex.trained);
+          if (active) brainMarkPushed();
+        }
+      } catch {
+      }
+    };
+    const schedule = () => {
+      if (deb) clearTimeout(deb);
+      deb = setTimeout(() => void tick(), 4000);
+    };
+    tick();
+    const iv = setInterval(tick, 60_000);
+    const onLearn = () => schedule();
+    window.addEventListener('nexus:brain-learn', onLearn);
+    window.addEventListener('focus', onLearn);
+    return () => {
+      active = false;
+      clearInterval(iv);
+      if (deb) clearTimeout(deb);
+      window.removeEventListener('nexus:brain-learn', onLearn);
+      window.removeEventListener('focus', onLearn);
+    };
+  }, [me?.id]);
 
   async function decryptPreview(it: ConversationItem) {
     if (!keyRef.current || !it.public_key) return;
@@ -318,11 +417,9 @@ export default function ChatApp() {
         setDms((d) => d.map((x) => (x.key === it.key ? { ...x, lastMsg: text.slice(0, 80) } : x)));
       }
     } catch {
-      /* noop */
     }
   }
 
-  // ---------- EVENT HANDLERS ----------
   async function refreshDms() {
     const meId = meRef.current?.id;
     if (!meId) return;
@@ -350,7 +447,6 @@ export default function ChatApp() {
       setDms(items);
       items.forEach((it) => decryptPreview(it).catch(() => {}));
     } catch {
-      /* noop */
     }
   }
 
@@ -414,7 +510,7 @@ export default function ChatApp() {
       scheduleExpiry(key, m.id);
       if (!dmsRef.current.some((d) => d.key === key)) refreshDms();
       const peerName = dmsRef.current.find((d) => d.key === key)?.name ?? 'Pesan baru';
-      decryptForNotify(key, m, peerName);
+      if (!isMuted(key)) decryptForNotify(key, m, peerName);
     }
   }
 
@@ -443,11 +539,15 @@ export default function ChatApp() {
       updateTitle(Object.values(useStore.getState().unread).reduce((a, b) => a + b, 0));
       scheduleExpiry(key, m.id);
       const gName = groupsRef.current.find((g) => GRK(g.id) === key)?.name ?? 'Grup';
-      decryptForNotify(key, m, gName);
+      if (!isMuted(key)) decryptForNotify(key, m, gName);
     }
   }
 
   async function decryptForNotify(key: string, m: Msg, who: string) {
+    if (getNotifPrivacy()) {
+      appNotify(who, '🔒 Pesan baru', { icon: '💬' });
+      return;
+    }
     if (m.msg_type !== 'text') {
       appNotify(who, `📎 ${m.msg_type}`, { icon: '💬' });
       return;
@@ -492,20 +592,92 @@ export default function ChatApp() {
     writeMsgCache(key, msgMapRef.current[key]);
   }
 
-  // Pesan sementara: pengatur durasi dari header percakapan.
   function cycleDisappearFor(key: string) {
     cycleDisappear(key);
     setNowTick((t) => t + 1);
   }
 
-  // Pin/unpin percakapan dari daftar chat.
   function togglePinFor(key: string) {
     togglePin(key);
     setNowTick((t) => t + 1);
   }
 
-  // Pesan sementara: jadwalkan kedaluwarsa (pengirim hapus di server + lokal,
-  // penerima sembunyikan lokal). Dipakai saat kirim sukses & saat terima.
+  async function ensureDmKey(peerId: string): Promise<string> {
+    const key = DMK(peerId);
+    if (keyMapRef.current[key]) return key;
+    const peer =
+      users.find((u) => u.id === peerId) ??
+      dmsRef.current.find((d) => d.peerId === peerId);
+    const pub = peer?.public_key;
+    if (!pub || !privateKey) throw new Error('Kontak tidak punya public key.');
+    const k = await deriveSharedKey(privateKey, pub);
+    keyMapRef.current[key] = k;
+    setKeyMap({ ...keyMapRef.current });
+    if (!dmsRef.current.some((d) => d.key === key)) {
+      const convId = await rpcGetOrCreateConversation(me!.id, peerId).catch(() => undefined);
+      if (convId) {
+        const peerName = peer && 'username' in peer ? peer.username : (peer as ConversationItem | undefined)?.name;
+        dmsRef.current = [
+          {
+            key,
+            kind: 'dm',
+            id: convId,
+            peerId,
+            name: peerName ?? 'user',
+            public_key: pub,
+            online: false,
+            lastAt: undefined,
+            lastMsg: undefined,
+          },
+          ...dmsRef.current,
+        ];
+        setDms(dmsRef.current);
+      }
+    }
+    return key;
+  }
+
+  async function forwardTo(msg: Msg, targetKey: string) {
+    const a: { key: string; kind: 'dm' | 'group' } = {
+      key: targetKey,
+      kind: targetKey.startsWith('grp:') ? 'group' : 'dm',
+    };
+    const srcKey = activeRef.current?.key;
+    const srcK = srcKey ? keyMapRef.current[srcKey] : undefined;
+    if (!srcK) return;
+    try {
+      if (msg.msg_type === 'text') {
+        const d = await decodeMessage(msg, srcK);
+        await sendTextTo(a, d.text, null);
+      } else if (msg.media_path) {
+        const blob = await downloadMedia('chat-media', msg.media_path);
+        const ext = msg.msg_type === 'video' ? 'mp4' : msg.msg_type === 'gif' ? 'gif' : msg.msg_type === 'voice' ? 'webm' : 'jpg';
+        const mime = msg.msg_type === 'video' ? 'video/mp4' : msg.msg_type === 'gif' ? 'image/gif' : msg.msg_type === 'voice' ? 'audio/webm' : 'image/jpeg';
+        const file = new File([blob], `forward.${ext}`, { type: mime });
+        await sendMediaTo(a, file, null);
+      }
+      appNotify('DI-FORWARD', 'Pesan diteruskan ke percakapan lain.', { icon: '↪️' });
+    } catch (e) {
+      appNotify('GAGAL FORWARD', toastErr(e), { icon: '⚠️' });
+    }
+  }
+
+  async function broadcastTo(ids: string[], text: string) {
+    const t = text.trim();
+    if (!t || ids.length === 0) return;
+    let ok = 0;
+    for (const id of ids) {
+      try {
+        if (isBlocked(id)) continue;
+        const key = await ensureDmKey(id);
+        await sendTextTo({ key, kind: 'dm' }, t, null);
+        ok += 1;
+      } catch {
+      }
+    }
+    appNotify('BROADCAST', ok > 0 ? `Terkirim ke ${ok} kontak.` : 'Tidak ada yang terkirim.', { icon: '📣' });
+  }
+
   function scheduleExpiry(key: string, msgId: string) {
     const secs = getDisappearSeconds(key);
     if (!secs) return;
@@ -515,23 +687,19 @@ export default function ChatApp() {
       const list = msgMapRef.current[key] ?? [];
       const msg = list.find((x) => x.id === msgId);
       if (msg && msg.sender_id === meRef.current?.id) {
-        // Pengirim: hapus dari server (realtime meng-update penerima) + lokal.
         try {
           if (key.startsWith('grp:')) rpcGroupDeleteMessage(msgId, meRef.current!.id).catch(() => {});
           else rpcDeleteMessage(msgId, meRef.current!.id).catch(() => {});
         } catch {
-          /* noop */
         }
         evictCache(msgId);
       } else {
-        // Penerima: sembunyikan lokal + catat tombstone agar tidak muncul lagi.
         tombRef.current.add(msgId);
         const arr = Array.from(tombRef.current);
         if (arr.length > 500) arr.splice(0, arr.length - 500);
         try {
           localStorage.setItem('nexus:expired', JSON.stringify(arr));
         } catch {
-          /* noop */
         }
       }
       delete expiryRef.current[msgId];
@@ -583,7 +751,6 @@ export default function ChatApp() {
   }
 
   function storeMsgs(key: string, rows: Msg[]) {
-    // Saring pesan yang sudah kedaluwarsa (tombstone) supaya tidak muncul lagi.
     if (tombRef.current.size > 0) rows = rows.filter((m) => !tombRef.current.has(m.id));
     msgMapRef.current = { ...msgMapRef.current, [key]: rows };
     setMsgMap(msgMapRef.current);
@@ -597,11 +764,9 @@ export default function ChatApp() {
       const rows = await fetchMsgs(a.key, true);
       storeMsgs(a.key, rows);
     } catch {
-      /* noop */
     }
   }, []);
 
-  // ---------- OPEN CONVERSATION ----------
   async function openDm(item: ConversationItem) {
     setTab('chats');
     const key = item.key;
@@ -629,7 +794,6 @@ export default function ChatApp() {
         const rows = await fetchMsgs(key);
         storeMsgs(key, rows);
       } catch {
-        /* noop */
       }
     }
   }
@@ -659,15 +823,12 @@ export default function ChatApp() {
               groupKey = await importAESKey(raw);
               break;
             } catch {
-              /* coba baris berikutnya */
             }
           }
         }
       } catch {
-        /* key gagal dibuka */
       }
 
-      // Device baru: belum punya entri kunci grup → pulihkan lewat backup password.
       if (!groupKey && me) {
         try {
           const pkey = getPasswordKey();
@@ -677,14 +838,12 @@ export default function ChatApp() {
             groupKey = await importAESKey(raw);
           }
         } catch {
-          /* backup gagal */
         }
       }
 
       if (groupKey) {
         keyMapRef.current[key] = groupKey;
         setKeyMap({ ...keyMapRef.current });
-        // Simpan self-entry utk device ini + segarkan backup (best-effort).
         if (keyRef.current && me) {
           try {
             const myPub = await exportPublicRaw(keyRef.current);
@@ -692,7 +851,6 @@ export default function ChatApp() {
             const self = await encryptToRecipient(keyRef.current, myPub, raw);
             await rpcSaveGroupKey(gid, me.id, self.ciphertext, self.iv, myPub, myPub);
           } catch {
-            /* noop */
           }
           try {
             const pkey = getPasswordKey();
@@ -702,7 +860,6 @@ export default function ChatApp() {
               await rpcSaveGroupKeyBackup(gid, enc.ciphertext, enc.iv);
             }
           } catch {
-            /* noop */
           }
         }
       }
@@ -714,8 +871,6 @@ export default function ChatApp() {
     }
   }
 
-  // ---------- SEND ----------
-  // Semua public key milik user ini (utama + sekunder) untuk enkripsi multi-key.
   function peerKeys(userId: string, fallback?: string | null): string[] {
     const keys = userKeysRef.current[userId] ?? [];
     const set = new Set(keys);
@@ -749,12 +904,9 @@ export default function ChatApp() {
     writeMsgCache(key, next);
   }
 
-  // Setelah pesan terkirim: kasih tahu perangkat penerima lewat Web Push.
-  // `body` berisi cuplikan isi pesan (max ~140 karakter) supaya muncul di
-  // notifikasi. CATATAN: cuplikan ini terlihat server saat mengirim push —
-  // tradeoff agar isi pesan tampil di notif (diminta pengguna).
   async function pushAfterSend(a: { key: string; kind: 'dm' | 'group' }, title: string, body: string) {
     try {
+      if (getNotifPrivacy()) body = '🔒 Pesan baru';
       if (a.kind === 'dm') {
         const conv = dmsRef.current.find((d) => d.key === a.key);
         if (conv?.peerId) await triggerPush([conv.peerId], title, body, '/', conv.id);
@@ -765,7 +917,6 @@ export default function ChatApp() {
         if (ids.length) await triggerPush(ids, title, body);
       }
     } catch {
-      /* push opsional */
     }
   }
 
@@ -820,6 +971,14 @@ export default function ChatApp() {
   async function sendText(text: string, replyTo?: string | null) {
     const a = activeRef.current;
     if (!a) return;
+    if (a.kind === 'dm' && isBlocked(a.key.replace('dm:', ''))) {
+      appNotify('TERBLOKIR', 'Kontak ini diblokir. Buka blokir dulu dari header chat.', { icon: '🚫' });
+      return;
+    }
+    await sendTextTo(a, text, replyTo);
+  }
+
+  async function sendTextTo(a: { key: string; kind: 'dm' | 'group' }, text: string, replyTo?: string | null) {
     const k = keyMapRef.current[a.key];
     if (!k) return;
     const enc = await encryptText(k, text).catch((e) => {
@@ -828,7 +987,7 @@ export default function ChatApp() {
     });
     if (!enc) return;
     const { ciphertext, iv } = enc;
-    const peer = dmsRef.current.find((d) => d.key === a.key)?.peerId;
+    const peer = a.kind === 'dm' ? a.key.replace('dm:', '') : undefined;
     const peerUser = users.find((u) => u.id === peer);
     const cts =
       a.kind === 'dm'
@@ -895,6 +1054,14 @@ export default function ChatApp() {
   async function sendMedia(file: File, replyTo?: string | null) {
     const a = activeRef.current;
     if (!a) return;
+    if (a.kind === 'dm' && isBlocked(a.key.replace('dm:', ''))) {
+      appNotify('TERBLOKIR', 'Kontak ini diblokir. Buka blokir dulu dari header chat.', { icon: '🚫' });
+      return;
+    }
+    await sendMediaTo(a, file, replyTo);
+  }
+
+  async function sendMediaTo(a: { key: string; kind: 'dm' | 'group' }, file: File, replyTo?: string | null) {
     const BIG_MAX = 1024 * 1024 * 1024;
     if (file.size > BIG_MAX) {
       appNotify('FILE TERLALU BESAR', 'Maksimal 1 GB per kirim.', { icon: '⚠️' });
@@ -911,8 +1078,6 @@ export default function ChatApp() {
           : 'image';
     const localId = crypto.randomUUID();
     mediaRetryRef.current.set(localId, { file, replyTo: replyTo ?? null });
-    // Bubble langsung muncul di KEDUA sisi (status "uploading"), isi menyusul
-    // setelah dikompresi & diunggah ke host media (WA-like).
     const dummyHeader = '{"p":1}';
     const localMsg: Msg = {
       id: localId,
@@ -976,12 +1141,9 @@ export default function ChatApp() {
         a.kind === 'dm' ? `📎 ${type}` : `📎 ${type} dari ${me!.username}`,
       );
     } catch {
-      /* error sudah ditampilkan di deliverMedia */
     }
   }
 
-  // Kompres (kalau perlu) → enkripsi chunked → upload → tandai 'ready' (realtime
-  // meng-update penerima). Header asli ditulis ke DB bersama path saat selesai.
   async function deliverMedia(
     a: { key: string; kind: 'dm' | 'group' },
     k: CryptoKey,
@@ -1019,7 +1181,6 @@ export default function ChatApp() {
       try {
         await rpcRetry(() => rpcSetMediaStatus(localId, 'failed'));
       } catch {
-        /* status gagal opsional */
       }
       patchLocalMsg(a.key, localId, { pending: false, failed: true, media_status: 'failed' });
       appNotify('GAGAL KIRIM MEDIA', toastErr(e), { icon: '⚠️' });
@@ -1036,12 +1197,10 @@ export default function ChatApp() {
     try {
       await rpcRetry(() => rpcSetMediaStatus(m.id, 'uploading'));
     } catch {
-      /* row sudah ada; status opsional */
     }
     await deliverMedia(a, k, file, m.msg_type, m.id, replyTo);
   }
 
-  // ---------- REACT / EDIT / DELETE ----------
   async function toggleReact(msgId: string, emoji: string) {
     const a = activeRef.current;
     if (!a || !me) return;
@@ -1055,7 +1214,6 @@ export default function ChatApp() {
         else await rpcGroupAddReaction(msgId, me.id, emoji);
       }
     } catch {
-      /* noop */
     }
   }
 
@@ -1094,7 +1252,6 @@ export default function ChatApp() {
     }
   }
 
-  // ---------- NEW CHAT / GROUP ----------
   async function startDm(u: User) {
     setModal(null);
     if (!me) return;
@@ -1137,13 +1294,11 @@ export default function ChatApp() {
           );
         }),
       );
-      // Backup kunci grup utk creator (recovery device baru).
       if (myPub && getPasswordKey()) {
         try {
           const enc = await encryptText(getPasswordKey()!, rawKey);
           await rpcSaveGroupKeyBackup(gid, enc.ciphertext, enc.iv);
         } catch {
-          /* noop */
         }
       }
       keyMapRef.current[GRK(gid)] = groupKey;
@@ -1182,7 +1337,6 @@ export default function ChatApp() {
     }
   }
 
-  // ---------- CALL ----------
   function startCall() {
     if (!active || !me || active.kind !== 'dm') return;
     const item = dms.find((d) => d.key === active.key);
@@ -1207,6 +1361,59 @@ export default function ChatApp() {
     setIncoming(null);
   }
 
+  async function startGroupCall() {
+    if (!active || !me || active.kind !== 'group') return;
+    const gid = active.key.replace('grp:', '');
+    const g = groups.find((x) => x.id === gid);
+    let mems = groupMembers[gid];
+    if (!mems || mems.length === 0) {
+      mems = await rpcGroupMembers(gid).catch(() => []);
+      if (mems.length > 0) setGroupMembers((m) => ({ ...m, [gid]: mems }));
+    }
+    if (!mems || mems.length < 2) {
+      appNotify('Video call grup', 'Butuh minimal 2 anggota grup.', { icon: '⚠️' });
+      return;
+    }
+    const gc = {
+      mode: 'caller' as const,
+      callId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      groupId: gid,
+      groupName: g?.name ?? 'Grup',
+      initiator: me.id,
+      members: mems,
+    };
+    groupCallRef.current = gc;
+    setGroupCall(gc);
+    inCallRef.current = true;
+  }
+
+  function acceptGroupCall() {
+    const inc = incomingGroupCallRef.current;
+    if (!inc || !me) return;
+    incomingGroupCallRef.current = null;
+    setIncomingGroupCall(null);
+    const gc = {
+      mode: 'callee' as const,
+      callId: inc.callId,
+      groupId: inc.groupId,
+      groupName: inc.groupName,
+      initiator: inc.initiator,
+      members: inc.members,
+    };
+    groupCallRef.current = gc;
+    setGroupCall(gc);
+    inCallRef.current = true;
+  }
+  function declineGroupCall() {
+    incomingGroupCallRef.current = null;
+    setIncomingGroupCall(null);
+  }
+  function closeGroupCall() {
+    groupCallRef.current = null;
+    setGroupCall(null);
+    inCallRef.current = false;
+  }
+
   async function logout() {
     if (me) rpcLogAccess(me.id, 'logout').catch(() => {});
     stopPresence();
@@ -1219,7 +1426,6 @@ export default function ChatApp() {
     setView('landing');
   }
 
-  // ---------- DERIVED ----------
   const allItems = useMemo(() => {
     const d = dms.map((it) => ({
       ...it,
@@ -1245,6 +1451,10 @@ export default function ChatApp() {
   });
   const activeKeyObj = active ? keyMap[active.key] : undefined;
   const activePeer = active?.kind === 'dm' ? dms.find((d) => d.key === active.key) : undefined;
+  const privacyVer = usePrivacyVersion();
+  const activePeerBlocked = activePeer?.peerId ? isBlocked(activePeer.peerId) : false;
+  const activeMuted = active ? isMuted(active.key) : false;
+  const activeLastSeen = activePeer?.peerId ? formatLastSeen(getLastSeen()[activePeer.peerId]) : '';
   const groupLocked = active?.kind === 'group' ? !keyMap[active.key] : false;
   const activeTyper = active ? typing[active.key] ?? [] : [];
   const totalUnread = Object.values(unread).reduce((a, b) => a + b, 0);
@@ -1264,7 +1474,7 @@ export default function ChatApp() {
     <div className="app-height relative w-full max-w-full flex flex-col bg-abyss scanlines overflow-hidden">
       <CyberBg />
 
-      {/* TOP BAR */}
+      {}
       <header className="pt-safe-2 relative z-20 flex items-center gap-2 px-3 sm:px-5 pb-3 border-b border-white/10 bg-panel/80 backdrop-blur-xl w-full max-w-full min-w-0">
         <div className="flex items-center gap-2 font-mono mr-auto">
           <span className="w-2.5 h-2.5 rounded-full bg-neon animate-pulseglow" />
@@ -1286,6 +1496,13 @@ export default function ChatApp() {
             title="Ghost mode"
           >
             <Ghost size={17} />
+          </button>
+          <button
+            onClick={() => setModal('ai')}
+            className="p-2 rounded-lg text-slate-400 hover:text-lime border border-white/10"
+            title="NEXUS AI — asisten privat offline"
+          >
+            <Sparkles size={17} />
           </button>
           <button
             onClick={async () => {
@@ -1374,7 +1591,7 @@ export default function ChatApp() {
         </div>
       </header>
 
-      {/* NAV TABS */}
+      {}
       <div className="relative z-20 flex border-b border-white/10 bg-black/30">
         {[
           { id: 'chats', label: 'CHATS', icon: MessageSquare },
@@ -1393,9 +1610,9 @@ export default function ChatApp() {
         ))}
       </div>
 
-      {/* MAIN */}
+      {}
       <div className="relative z-10 flex-1 flex min-h-0 min-w-0">
-        {/* SIDEBAR */}
+        {}
         <aside
           className={`${tab === 'chats' ? (active ? 'hidden md:flex' : 'flex') : 'hidden'} w-full md:w-[360px] min-w-0 flex-col border-r border-white/10 bg-panel/50 min-h-0`}
         >
@@ -1412,7 +1629,7 @@ export default function ChatApp() {
           />
         </aside>
 
-        {/* CONVERSATION */}
+        {}
         <main className={`flex-1 min-h-0 min-w-0 max-w-full ${tab === 'chats' ? (active ? 'flex' : 'hidden md:flex') : 'hidden'}`}>
           {active && activeKeyObj ? (
             <Conversation
@@ -1434,6 +1651,7 @@ export default function ChatApp() {
               onDelete={delMsg}
               onRetry={resendMsg}
               onOpenCall={active.kind === 'dm' ? startCall : undefined}
+              onOpenGroupCall={active.kind === 'group' ? startGroupCall : undefined}
               onAddMember={active.kind === 'group' ? () => setAddMemberFor(active.key.replace('grp:', '')) : undefined}
               groupLocked={active.kind === 'group' ? groupLocked : false}
               userNames={userNames}
@@ -1441,6 +1659,14 @@ export default function ChatApp() {
               onBack={() => setActive(null)}
               disappearSecs={getDisappearSeconds(active.key)}
               onCycleDisappear={() => cycleDisappearFor(active.key)}
+              onForward={(m) => setForwardMsg(m)}
+              peerBlocked={activePeerBlocked}
+              onToggleBlock={() => {
+                if (activePeer?.peerId) toggleBlocked(activePeer.peerId);
+              }}
+              muted={activeMuted}
+              onToggleMute={() => toggleMuted(active.key)}
+              lastSeenLabel={activeLastSeen}
             />
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center text-slate-600">
@@ -1451,7 +1677,7 @@ export default function ChatApp() {
           )}
         </main>
 
-        {/* REELS / NOBAR TABS */}
+        {}
         <div className={`flex-1 min-h-0 min-w-0 ${tab === 'reels' ? 'flex lg:flex' : 'hidden'}`}>
           <Reels />
         </div>
@@ -1460,7 +1686,7 @@ export default function ChatApp() {
         </div>
       </div>
 
-      {/* MODALS */}
+      {}
       <AnimatePresence>
         {modal === 'newchat' && (
           <NewChatModal users={users} meId={me!.id} onPick={startDm} onClose={() => setModal(null)} />
@@ -1470,6 +1696,7 @@ export default function ChatApp() {
         )}
         {modal === 'ghost' && <GhostSettingsModal onClose={() => setModal(null)} />}
         {modal === 'profile' && <ProfileModal onClose={() => setModal(null)} />}
+        {modal === 'ai' && <AiPanel onClose={() => setModal(null)} />}
       </AnimatePresence>
 
       {addMemberFor && (
@@ -1482,10 +1709,47 @@ export default function ChatApp() {
         />
       )}
 
+      {forwardMsg && (
+        <ForwardPicker
+          dms={dms.map((d) => ({ key: d.key, name: d.name, peerId: d.peerId }))}
+          groups={groups.map((g) => ({ id: g.id, name: g.name }))}
+          excludeKey={active?.key ?? ''}
+          onPick={(targetKey) => {
+            forwardTo(forwardMsg, targetKey).finally(() => setForwardMsg(null));
+          }}
+          onClose={() => setForwardMsg(null)}
+        />
+      )}
+
       {incoming && <IncomingCallOverlay peer={incoming} onAccept={acceptCall} onDecline={declineCall} />}
+
+      {incomingGroupCall && !groupCall && (
+        <IncomingGroupCallOverlay
+          groupName={incomingGroupCall.groupName}
+          members={incomingGroupCall.members}
+          initiator={incomingGroupCall.initiator}
+          callId={incomingGroupCall.callId}
+          me={me!}
+          onAccept={acceptGroupCall}
+          onDecline={declineGroupCall}
+        />
+      )}
 
       {call && (
         <VideoCall mode={call.mode} peer={call.peer} onClose={() => { setCall(null); inCallRef.current = false; }} />
+      )}
+
+      {groupCall && (
+        <GroupVideoCall
+          callId={groupCall.callId}
+          groupId={groupCall.groupId}
+          groupName={groupCall.groupName}
+          initiator={groupCall.initiator}
+          members={groupCall.members}
+          mode={groupCall.mode}
+          me={me!}
+          onClose={closeGroupCall}
+        />
       )}
 
       <InstallBanner />

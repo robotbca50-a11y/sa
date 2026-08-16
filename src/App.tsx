@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { useEffect, useCallback, useState } from 'react';
 import Landing from './pages/Landing';
 import Auth from './pages/Auth';
@@ -7,6 +14,7 @@ import ToastHost from './components/ToastHost';
 import VideoLoader from './components/VideoLoader';
 import BlackoutOverlay from './components/BlackoutOverlay';
 import AntiSadapOverlay from './components/AntiSadapOverlay';
+import AppLock from './components/AppLock';
 import { useStore } from './lib/store';
 import { loadPrivateKey } from './lib/keystore';
 import { exportPublicRaw } from './lib/crypto';
@@ -108,6 +116,7 @@ export default function App() {
       {view === 'admin' && <Admin />}
       <BlackoutOverlay />
       <AntiSadapOverlay />
+      <AppLock />
       <ToastHost />
       {!booted && <VideoLoader onDone={() => setBooted(true)} />}
     </>

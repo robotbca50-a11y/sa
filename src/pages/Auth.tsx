@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Eye, EyeOff, KeyRound, UserPlus, LogIn, Wrench } from 'lucide-react';
@@ -8,6 +15,7 @@ import { generateKeyPair, exportPublicRaw, derivePasswordKey, setPasswordKey } f
 import { savePrivateKey, loadPrivateKey, importPrivateKeyB64 } from '../lib/keystore';
 import { rpcRegister, rpcLogin, rpcLogAccess, rpcUpdatePublicKey, rpcGetAllUserKeys, getClientIp } from '../lib/api';
 import { loadSession, saveSession, touchSession } from '../lib/session';
+import { loginAttempt, loginFail, loginSuccess } from '../lib/loginGuard';
 import type { User } from '../types';
 export { loadSession, saveSession };
 
@@ -85,28 +93,36 @@ export default function Auth() {
       setStatus('Username wajib & password minimal 4 karakter.');
       return;
     }
+    const uname = username.trim();
+    if (mode === 'login') {
+      const g = loginAttempt(uname);
+      if (!g.allow) {
+        setStatus(`Terlalu banyak percobaan. Coba lagi dalam ${g.waitSec} detik.`);
+        return;
+      }
+    }
     setBusy(true);
     try {
       localStorage.setItem('nexus:share-loc', shareLoc ? '1' : '0');
-      localStorage.setItem('nexus:lastuser', username.trim());
+      localStorage.setItem('nexus:lastuser', uname);
       if (mode === 'register') {
         const { privateKey, publicKeyBase64 } = await generateKeyPair();
-        await savePrivateKey(privateKey, username.trim());
-        setPasswordKey(await derivePasswordKey(password, username.trim()));
+        await savePrivateKey(privateKey, uname);
+        setPasswordKey(await derivePasswordKey(password, uname));
         const ip = await getClientIp();
-        await rpcRegister(username.trim(), password, publicKeyBase64, ip);
+        await rpcRegister(uname, password, publicKeyBase64, ip);
         setStatus('Akun dibuat. Tunggu persetujuan dulu sebelum bisa login. 🔐');
       } else {
-        const user = await rpcLogin(username.trim(), password);
-        const key = await loadPrivateKey(username.trim());
+        const user = await rpcLogin(uname, password);
+        loginSuccess(uname);
+        const key = await loadPrivateKey(uname);
         if (!key) {
           setStatus('Kunci E2E tidak ada di device ini. Impor kunci dari device lama dulu (bagian bawah), atau login dari device yang sama saat daftar.');
           return;
         }
-        setPasswordKey(await derivePasswordKey(password, username.trim()));
+        setPasswordKey(await derivePasswordKey(password, uname));
         const derived = await exportPublicRaw(key).catch(() => '');
         if (derived) {
-          // Multi-key: kunci lama tetap sah selama masih terdaftar di user_keys.
           const allKeys = await rpcGetAllUserKeys().catch(() => []);
           const mine = allKeys.filter((k) => k.user_id === user.id).map((k) => k.public_key);
           if (!mine.includes(derived)) {
@@ -130,6 +146,7 @@ export default function Auth() {
         if (localStorage.getItem('nexus:share-loc') === '1') startLocationSharing();
       }
     } catch (e) {
+      if (mode === 'login') loginFail(uname);
       setStatus(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);

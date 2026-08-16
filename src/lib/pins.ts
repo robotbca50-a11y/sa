@@ -1,4 +1,10 @@
-// Pin percakapan: disimpan lokal (per perangkat).
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 const KEY = 'nexus:pins';
 
 export function getPinnedKeys(): string[] {
@@ -21,7 +27,6 @@ export function togglePin(key: string): boolean {
   try {
     localStorage.setItem(KEY, JSON.stringify(next));
   } catch {
-    /* noop */
   }
   return !pinned;
 }

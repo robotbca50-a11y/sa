@@ -1,18 +1,18 @@
--- =====================================================================
---  NEXUS — MIGRASI DATABASE
---  Jalankan SEKALI di: Supabase Dashboard > SQL Editor > New query
---  Wajib dijalankan supaya semua fitur (grup, story, reels, lokasi,
---  admin, dll) aktif. Core chat lama tetap kompatibel.
--- =====================================================================
 
--- ---------------------------------------------------------------------
--- 1) BUKA EXTENSIONS
--- ---------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
 create extension if not exists pgcrypto;
--- Supabase menaruh extension di schema `extensions`, sedangkan semua fungsi
--- RPC di bawah pakai `set search_path = public`. Pindahkan pgcrypto ke
--- schema `extensions` lalu buat wrapper di `public` biar crypt/gen_salt/
--- digest/gen_random_bytes selalu ketemu di editor maupun di dalam fungsi.
+
+
+
+
 alter extension pgcrypto set schema extensions;
 
 create or replace function public.crypt(text, text) returns text
@@ -27,9 +27,9 @@ language sql stable as $$ select extensions.digest($1, $2) $$;
 create or replace function public.gen_random_bytes(int) returns bytea
 language sql volatile as $$ select extensions.gen_random_bytes($1) $$;
 
--- ---------------------------------------------------------------------
--- 2) TABEL DASAR (aman kalau sudah ada)
--- ---------------------------------------------------------------------
+
+
+
 create table if not exists public.users (
   id uuid primary key default gen_random_uuid(),
   username text unique not null,
@@ -65,14 +65,14 @@ alter table public.messages add column if not exists reply_to uuid;
 alter table public.messages add column if not exists edited_at timestamptz;
 alter table public.messages add column if not exists deleted boolean default false;
 alter table public.messages add column if not exists read_at timestamptz;
--- Multi-key E2E: ciphertext per public key penerima (kunci publik -> { ct, iv })
+
 alter table public.messages add column if not exists ciphertexts jsonb;
--- Status media (WA-like: bubble langsung muncul, isi menyusul): 'uploading' -> 'ready' | 'failed'
+
 alter table public.messages add column if not exists media_status text;
 
--- ---------------------------------------------------------------------
--- 3) TABEL FITUR BARU
--- ---------------------------------------------------------------------
+
+
+
 create table if not exists public.group_chats (
   id uuid primary key default gen_random_uuid(),
   name text not null,
@@ -132,22 +132,22 @@ create table if not exists public.group_keys (
   primary key (group_id, user_id, public_key, member_key)
 );
 
--- REKONSLIASI group_keys utk DB lama: `create table if not exists` tidak akan
--- menambah kolom ke tabel yang sudah ada. Kalau skip ini, `update` di bawah
--- dan RPC multi-key (group_save_key dll) gagal "column ... does not exist".
+
+
+
 alter table public.group_keys add column if not exists public_key text default '';
 alter table public.group_keys add column if not exists member_key text default '';
 
--- public_key  = kunci publik PEMBERI (yang mengenkripsi utk member ini).
--- member_key  = kunci publik member yang dituju (bisa banyak utk 1 member).
--- Baris lama tidak punya info ini ('' = sentinel) → frontend pakai kunci
--- publik creator saat ini, persis seperti perilaku sebelum multi-key.
+
+
+
+
 update public.group_keys set public_key = '', member_key = '' where public_key is null or member_key is null;
 alter table public.group_keys drop constraint if exists group_keys_pkey;
 alter table public.group_keys add constraint group_keys_pkey primary key (group_id, user_id, public_key, member_key);
 
--- key E2E sekunder akun (hasil rotate/regenerate). Kunci lama tetap disimpan
--- supaya pesan lama + device lama tetap bisa dibuka.
+
+
 create table if not exists public.user_keys (
   user_id uuid not null references public.users(id) on delete cascade,
   public_key text not null,
@@ -156,8 +156,8 @@ create table if not exists public.user_keys (
 );
 create index if not exists user_keys_user on public.user_keys (user_id);
 
--- backup kunci grup per user, dienkripsi dengan kunci turunan password akun.
--- Supaya device baru tetap bisa membuka grup walau belum pernah dapat kunci.
+
+
 create table if not exists public.group_key_backups (
   group_id uuid not null references public.group_chats(id) on delete cascade,
   user_id uuid not null references public.users(id) on delete cascade,
@@ -250,7 +250,7 @@ create table if not exists public.upload_daily (
   primary key (user_id, day)
 );
 
--- Sesi login (token dipegang browser, hanya hash yang disimpan di sini)
+
 create table if not exists public.sessions (
   token_hash text primary key,
   user_id uuid not null references public.users(id) on delete cascade,
@@ -261,7 +261,7 @@ create table if not exists public.sessions (
 
 create index if not exists sessions_user on public.sessions (user_id);
 
--- Langganan Web Push (diisi client, dipakai edge function send-push)
+
 create table if not exists public.push_subscriptions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.users(id) on delete cascade,
@@ -270,11 +270,11 @@ create table if not exists public.push_subscriptions (
 );
 
 create index if not exists push_subscriptions_user on public.push_subscriptions (user_id);
--- Satu perangkat = satu baris (endpoint unik)
+
 create unique index if not exists push_subscriptions_endpoint on public.push_subscriptions ((subscription ->> 'endpoint'));
 
--- Token FCM perangkat NATIVE (APK/iOS) — dipakai edge function send-push
--- untuk kirim notif ke app yang dipasang (Web Push tidak jalan di WebView).
+
+
 create table if not exists public.device_tokens (
   token text primary key,
   user_id uuid not null references public.users(id) on delete cascade,
@@ -284,19 +284,19 @@ create table if not exists public.device_tokens (
 
 create index if not exists device_tokens_user on public.device_tokens (user_id);
 
--- Password di-hash (bcrypt). Kolom `password` lama dibiarkan utk migrasi akun lama.
+
 alter table public.users add column if not exists password_hash text;
 
--- Registrasi: lacak per browser (fingerprint) + sukses/gagal
+
 alter table public.registration_logs add column if not exists fingerprint text;
 alter table public.registration_logs add column if not exists success boolean default true;
 
--- Kill screen: master bisa bikin layar korban hitam penuh (aktif = hitam).
--- `ip` = IP terakhir korban, dipakai buat deteksi tanpa login (anti-hapus-storage).
--- REKONSLIASI: kalau tabel sudah ada dari versi lama, kolom yang ditambah di
--- versi baru harus di-`alter table` — `create table if not exists` TIDAK akan
--- menambah kolom. Tanpa ini, `set_blackout`/`get_blackout*` gagal
--- "column ip of relation blackouts does not exist".
+
+
+
+
+
+
 create table if not exists public.blackouts (
   target_user_id uuid primary key references public.users(id) on delete cascade,
   active boolean not null default true,
@@ -309,14 +309,14 @@ alter table public.blackouts add column if not exists set_by uuid;
 alter table public.blackouts add column if not exists ip text;
 alter table public.blackouts add column if not exists updated_at timestamptz not null default now();
 
--- ---------------------------------------------------------------------
--- REKONSLIASI SKEMA (penting utk DB lama)
--- `create table if not exists` TIDAK menambah kolom ke tabel yang sudah ada.
--- Kolom apa pun yang dipakai fungsi RPC wajib di-`add column if not exists`
--- di sini, kalau tidak di DB lama semua fungsi yang menyentuhnya akan gagal
--- "column ... of relation ... does not exist". Semua statement di bawah
--- idempoten & aman dijalankan berulang.
--- ---------------------------------------------------------------------
+
+
+
+
+
+
+
+
 alter table public.users add column if not exists public_key text;
 alter table public.users add column if not exists status text default 'pending';
 
@@ -347,9 +347,9 @@ alter table public.upload_daily add column if not exists files int not null defa
 alter table public.sessions add column if not exists expires_at timestamptz;
 alter table public.sessions add column if not exists revoked boolean not null default false;
 
--- ---------------------------------------------------------------------
--- 4) REALTIME: publish table yang perlu live
--- ---------------------------------------------------------------------
+
+
+
 do $$
 begin
   if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
@@ -368,14 +368,14 @@ alter table public.group_messages replica identity full;
 alter table public.reactions replica identity full;
 alter table public.group_reactions replica identity full;
 
--- ---------------------------------------------------------------------
--- 5) STORAGE BUCKET + POLICIES
--- ---------------------------------------------------------------------
+
+
+
 insert into storage.buckets (id, name, public, file_size_limit)
 values ('chat-media', 'chat-media', true, 536870912)
 on conflict (id) do update set public = true, file_size_limit = 536870912;
 
--- Foto profil (bukan konten chat; tidak ikut auto-clean harian).
+
 insert into storage.buckets (id, name, public, file_size_limit)
 values ('avatars', 'avatars', true, 5242880)
 on conflict (id) do update set public = true, file_size_limit = 5242880;
@@ -390,19 +390,19 @@ begin
     create policy "nexus public read" on storage.objects
       for select to anon, authenticated using (bucket_id in ('chat-media','avatars'));
   end if;
-  -- Dipakai auto-clean harian: client menghapus seluruh media di bucket.
+
   if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'nexus cleanup') then
     create policy "nexus cleanup" on storage.objects
       for delete to anon, authenticated using (bucket_id in ('chat-media','avatars'));
   end if;
 end $$;
 
--- ---------------------------------------------------------------------
--- 6) FUNGSI (RPC) — SEMUA security definer biar RLS tidak memblokir
--- ---------------------------------------------------------------------
 
--- Hapus fungsi lama dulu biar return type bisa diganti (error 42P13).
--- Aman: tidak ada objek lain yang bergantung pada RPC ini.
+
+
+
+
+
 do $$
 declare r record;
 begin
@@ -444,10 +444,10 @@ as $$
   );
 $$;
 
--- RATE LIMIT per (IP + user bila sudah login). Kalau hanya per IP, semua user
--- di belakang NAT/sekawanan wifi berbagi satu kuota dan gampang kena "terlalu
--- banyak permintaan" saat buka app. User yang sudah login diberi kuota sendiri.
--- Dipanggil otomatis di awal hampir semua fungsi RPC di bawah.
+
+
+
+
 create or replace function public.rate_limit(p_max int default 200, p_window int default 1)
 returns void
 language plpgsql volatile set search_path = public
@@ -470,7 +470,7 @@ begin
   end if;
 end $$;
 
--- Helper: pastikan user valid & approved
+
 create or replace function public.require_user(p_user_id uuid)
 returns void
 language plpgsql security definer set search_path = public
@@ -483,7 +483,7 @@ begin
   end if;
 end $$;
 
--- Helper: cek keanggotaan percakapan DM
+
 create or replace function public.require_conversation_member(p_conversation_id uuid, p_user_id uuid)
 returns void
 language plpgsql security definer set search_path = public
@@ -497,7 +497,7 @@ begin
   end if;
 end $$;
 
--- Helper: cek keanggotaan grup
+
 create or replace function public.require_group_member(p_group_id uuid, p_user_id uuid)
 returns void
 language plpgsql security definer set search_path = public
@@ -510,10 +510,10 @@ begin
   end if;
 end $$;
 
--- =====================================================================
--- SESSION AUTH (token per-login, bukan JWT yang bisa dipalsukan client)
--- Header yang dikirim frontend: x-nexus-token = <token random>
--- =====================================================================
+
+
+
+
 create or replace function public.auth_user_id()
 returns uuid
 language plpgsql stable set search_path = public
@@ -543,7 +543,7 @@ begin
   return v_uid;
 end $$;
 
--- Wajib login: return user_id atau tolak
+
 create or replace function public.require_auth()
 returns uuid
 language plpgsql security definer set search_path = public
@@ -556,7 +556,7 @@ begin
   return v_uid;
 end $$;
 
--- Logout: hapus sesi (wajib login + rate limit — cegah revoke sesi orang lain)
+
 create or replace function public.logout_user(p_token text)
 returns void
 language plpgsql security definer set search_path = public
@@ -571,7 +571,7 @@ begin
   where token_hash = encode(digest(p_token, 'sha256'), 'hex');
 end $$;
 
--- Kill screen: cek apakah layar target harus hitam (dipanggil tiap 4 detik)
+
 create or replace function public.get_blackout(p_user_id uuid default null)
 returns boolean
 language plpgsql security definer set search_path = public
@@ -587,9 +587,9 @@ begin
   return coalesce(v_active, false);
 end $$;
 
--- Kill screen versi publik: cek by username TANPA perlu login, biar korban yg
--- belum login / kena blokir tetap kena layar hitam dari halaman landing/login.
--- Hanya butuh rate limit (anti-abuse), datanya cuma boolean per username.
+
+
+
 create or replace function public.get_blackout_public(p_username text)
 returns boolean
 language plpgsql security definer set search_path = public
@@ -604,8 +604,8 @@ begin
   return coalesce(v_active, false);
 end $$;
 
--- Kill screen versi IP: cek by IP TANPA login. Dipakai buat jebak korban yang
--- hapus akun/storage-nya biar enggak bisa kabur dari layar hitam.
+
+
 create or replace function public.get_blackout_ip()
 returns boolean
 language plpgsql security definer set search_path = public
@@ -618,7 +618,7 @@ begin
   return coalesce(v_active, false);
 end $$;
 
--- Kill screen: master menyalakan/mematikan layar hitam target
+
 create or replace function public.set_blackout(p_admin_username text, p_admin_password text, p_target_user_id uuid, p_active boolean)
 returns void
 language plpgsql security definer set search_path = public
@@ -630,7 +630,7 @@ begin
     raise exception 'Admin password salah';
   end if;
   if p_active then
-    -- Catat IP terakhir korban (dari access_logs) supaya jebakan IP bisa aktif.
+
     select a.ip into v_ip
     from public.access_logs a
     where a.user_id = p_target_user_id
@@ -644,7 +644,7 @@ begin
   end if;
 end $$;
 
--- Kill screen: daftar user yg sedang layar hitam (buat tampilan panel master)
+
 create or replace function public.list_blackouts(p_admin_username text, p_admin_password text)
 returns table (target_user_id uuid, updated_at timestamptz)
 language plpgsql security definer set search_path = public
@@ -657,8 +657,8 @@ begin
   return query select b.target_user_id, b.updated_at from public.blackouts b order by b.updated_at desc;
 end $$;
 
--- Kuota upload storage: maks 2 GB & 2000 file per hari per akun.
--- Dipanggil dari frontend sebelum tiap upload.
+
+
 create or replace function public.log_media_upload(p_bytes bigint, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
@@ -688,7 +688,7 @@ begin
     files = upload_daily.files + excluded.files;
 end $$;
 
--- Hapus SEMUA user (bukan admin) berikut semua datanya. Dipakai tombol di Admin Console.
+
 create or replace function public.purge_all_users_except_master(p_admin_username text, p_admin_password text)
 returns void
 language plpgsql security definer set search_path = public
@@ -721,14 +721,14 @@ begin
   perform public.rate_limit();
   v_ip := coalesce(nullif(btrim(coalesce(p_ip, '')), ''), public.client_ip());
 
-  -- Blokir IP yg masih kena hukuman
+
   select blocked_until into v_blocked_until
   from public.ip_blocks where ip = v_ip and blocked_until > now();
   if v_blocked_until is not null then
     raise exception 'IP kamu diblokir sementara sampai % — kamu sudah membuat terlalu banyak akun dari IP yang sama. Coba lagi nanti.', to_char(v_blocked_until, 'DD-MM-YYYY HH24:MI');
   end if;
 
-  -- 1 akun sukses per browser (fingerprint). Browser yang sama tidak bisa daftar lagi.
+
   if v_fp is not null and exists (
     select 1 from public.registration_logs
     where fingerprint = v_fp and success = true
@@ -736,7 +736,7 @@ begin
     raise exception 'Browser ini sudah punya akun NEXUS. Buat akun lain pakai browser/perangkat lain.';
   end if;
 
-  -- Terlalu banyak percobaan GAGAL daftar (tiap percobaan tetap membebani DB)
+
   select count(*) into v_fail
   from public.registration_logs
   where success = false
@@ -749,7 +749,7 @@ begin
     raise exception 'Terlalu banyak percobaan daftar. IP diblokir 1 jam.';
   end if;
 
-  -- Maks 3 akun per IP dalam 10 menit
+
   select count(*) into v_cnt
   from public.registration_logs
   where ip = v_ip and success = true and created_at > now() - interval '10 minutes';
@@ -810,7 +810,7 @@ begin
     raise exception 'Terlalu banyak percobaan login gagal. IP diblokir 1 jam.';
   end if;
 
-  -- Cek password (mendukung akun lama yang masih plain, sekaligus di-upgrade ke bcrypt)
+
   select u.id into target_id
   from public.users u
   where u.username = btrim(p_username) and u.status = 'approved'
@@ -823,12 +823,12 @@ begin
     raise exception 'Username / password salah, atau belum di-ACC admin';
   end if;
 
-  -- Upgrade akun lama: simpan hash, hapus password plaintext
+
   update public.users
   set password_hash = crypt(p_password, gen_salt('bf')), password = null
   where public.users.id = target_id and public.users.password_hash is null;
 
-  -- Buat sesi login (token random, browser simpan, DB simpan hash-nya)
+
   v_token := encode(gen_random_bytes(32), 'hex');
   insert into public.sessions (token_hash, user_id, expires_at)
   values (encode(digest(v_token, 'sha256'), 'hex'), target_id, now() + interval '7 days');
@@ -851,7 +851,7 @@ declare
   v_fail int;
 begin
   perform public.rate_limit();
-  -- Anti brute-force: IP yang kena blokir (>=10 gagal / 15 menit) ditolak total.
+
   select blocked_until into v_blocked_until
   from public.ip_blocks where ip = v_ip and blocked_until > now();
   if v_blocked_until is not null then
@@ -873,7 +873,7 @@ begin
     return true;
   end if;
 
-  -- Gagal: catat percobaan, blokir kalau sudah 10x gagal dalam 15 menit.
+
   insert into public.login_attempts (ip, username, success)
   values (v_ip, p_admin_username, false);
   select count(*) into v_fail from public.login_attempts
@@ -961,38 +961,38 @@ begin
     raise exception 'Tidak bisa menghapus akun master';
   end if;
 
-  -- 1) DM: hapus semua pesan di percakapan yang melibatkan user (reactions ikut terhapus via cascade)
+
   delete from public.messages
   where conversation_id in (
     select id from public.conversations where user_a = p_target_id or user_b = p_target_id
   );
 
-  -- 2) Sisa pesan DM yang user kirim (pengaman kalau ada percakapan aneh)
+
   delete from public.messages where sender_id = p_target_id;
 
-  -- 3) Hapus percakapan
+
   delete from public.conversations where user_a = p_target_id or user_b = p_target_id;
 
-  -- 4) Grup yang user buat (member, kunci, pesan, reaction ikut cascade)
+
   delete from public.group_chats where created_by = p_target_id;
 
-  -- 5) Pesan grup yang user kirim di grup milik orang lain
+
   delete from public.group_messages where sender_id = p_target_id;
 
-  -- 6) Reaksi, member, kunci grup milik user (sudah cascade, tapi eksplisit biar aman)
+
   delete from public.reactions where user_id = p_target_id;
   delete from public.group_reactions where user_id = p_target_id;
   delete from public.group_members where user_id = p_target_id;
   delete from public.group_keys where user_id = p_target_id;
 
-  -- 8) Story, reels, lokasi, log akses (sudah cascade, eksplisit biar aman)
+
   delete from public.story_views where user_id = p_target_id;
   delete from public.stories where user_id = p_target_id;
   delete from public.reels where user_id = p_target_id;
   delete from public.user_locations where user_id = p_target_id;
   delete from public.access_logs where user_id = p_target_id;
 
-  -- 9) Baru hapus user-nya
+
   delete from public.users where id = p_target_id;
 end $$;
 
@@ -1013,8 +1013,8 @@ begin
   if v_id is null then
     raise exception 'Username / password salah';
   end if;
-  -- Kunci lama disimpan sebagai kunci sekunder biar device lama tetap bisa
-  -- membuka pesan yang dienkripsi dengan kunci itu (regenerate = tambah, bukan ganti).
+
+
   insert into public.user_keys (user_id, public_key)
   select id, public_key from public.users where id = v_id and public_key is not null
   on conflict do nothing;
@@ -1061,7 +1061,7 @@ begin
   limit 200;
 end $$;
 
--- DIRECTORY & DM
+
 create or replace function public.list_approved_users()
 returns table (id uuid, username text, public_key text, avatar text, created_at timestamptz)
 language plpgsql security definer set search_path = public
@@ -1075,8 +1075,8 @@ begin
   order by u.username;
 end $$;
 
--- Set/ganti/hapus foto profil akun sendiri. Path divalidasi ketat (cegah
--- traversal); disimpan dengan prefix bucket supaya client bisa render URL.
+
+
 create or replace function public.set_avatar(p_avatar text)
 returns void
 language plpgsql security definer set search_path = public
@@ -1095,8 +1095,8 @@ begin
   update public.users set avatar = 'avatars/' || p_avatar where id = v_uid;
 end $$;
 
--- Ganti username akun sendiri (login tetap akun yang sama — id/password/key
--- tidak berubah; username hanya handle tampilan + identitas login berikutnya).
+
+
 create or replace function public.update_username(p_new_username text)
 returns void
 language plpgsql security definer set search_path = public
@@ -1356,7 +1356,7 @@ begin
   where id = p_message_id and sender_id = v_uid;
 end $$;
 
--- REACTIONS
+
 create or replace function public.add_reaction(p_message_id uuid, p_emoji text, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
@@ -1401,7 +1401,7 @@ begin
   delete from public.reactions where message_id = p_message_id and user_id = v_uid and emoji = p_emoji;
 end $$;
 
--- GRUP
+
 create or replace function public.group_create(p_name text, p_members uuid[], p_creator uuid default null)
 returns uuid
 language plpgsql security definer set search_path = public
@@ -1457,7 +1457,7 @@ begin
   insert into public.group_members (group_id, user_id) values (p_group_id, p_user_id) on conflict do nothing;
 end $$;
 
--- Anggota grup (TANPA password/hash — eksplisit pilih kolom aman)
+
 create or replace function public.group_members(p_group_id uuid)
 returns table (id uuid, username text, public_key text, avatar text, status text, is_admin boolean, created_at timestamptz)
 language plpgsql security definer set search_path = public
@@ -1633,8 +1633,8 @@ begin
   delete from public.group_reactions where message_id = p_message_id and user_id = v_uid and emoji = p_emoji;
 end $$;
 
--- GROUP KEY (E2E). Satu member boleh punya banyak baris (per kunci device),
--- masing-masing mengenkripsi kunci grup dengan kunci publik PEMBERI.
+
+
 create or replace function public.group_save_key(p_group_id uuid, p_enc_key text, p_iv text, p_user_id uuid default null, p_public_key text default null, p_member_key text default null)
 returns void
 language plpgsql security definer set search_path = public
@@ -1679,7 +1679,7 @@ begin
   where gk.group_id = p_group_id and gk.user_id = v_uid;
 end $$;
 
--- Backup kunci grup untuk recovery device baru (dienkripsi kunci password akun).
+
 create or replace function public.group_save_key_backup(p_group_id uuid, p_enc_key text, p_iv text)
 returns void
 language plpgsql security definer set search_path = public
@@ -1712,7 +1712,7 @@ begin
   where group_id = p_group_id and user_id = v_uid;
 end $$;
 
--- Semua kunci publik (utama + sekunder) user approved, buat enkripsi multi-key.
+
 create or replace function public.get_all_user_keys()
 returns table (user_id uuid, public_key text)
 language plpgsql security definer set search_path = public
@@ -1732,7 +1732,7 @@ begin
   order by public_key;
 end $$;
 
--- STORY
+
 create or replace function public.story_add(p_media_path text, p_caption text, p_kind text, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
@@ -1826,7 +1826,7 @@ begin
   delete from public.stories where id = p_story_id and user_id = v_uid;
 end $$;
 
--- REELS
+
 create or replace function public.reel_add(p_source text, p_tiktok_url text default null, p_media_path text default null, p_caption text default '', p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
@@ -1872,7 +1872,7 @@ begin
   delete from public.reels where id = p_reel_id and user_id = v_uid;
 end $$;
 
--- LOKASI & LOG
+
 create or replace function public.upsert_location(p_lat double precision, p_lng double precision, p_accuracy double precision, p_user_id uuid default null)
 returns void
 language plpgsql security definer set search_path = public
@@ -1905,8 +1905,8 @@ begin
   insert into public.access_logs (user_id, event, ip, user_agent) values (v_uid, p_event, p_ip, p_user_agent);
 end $$;
 
--- Push subscription: dibaca edge function `send-push` lewat RPC ini, BUKAN
--- query langsung. Jadi tabel bisa di-lock penuh oleh RLS di bawah.
+
+
 create or replace function public.get_push_subscriptions(p_user_id uuid)
 returns table (subscription jsonb)
 language plpgsql security definer set search_path = public
@@ -1922,9 +1922,9 @@ begin
   where s.user_id = v_uid;
 end $$;
 
--- Semua subscription untuk sekumpulan user (dipakai edge function send-push,
--- satu panggilan RPC biar tidak kena rate-limit per user). Wajib login: hanya
--- user yang punya sesi valid (token dikirim edge function) yang boleh memakai.
+
+
+
 create or replace function public.get_push_subscriptions_for_users(p_user_ids uuid[])
 returns table (subscription jsonb)
 language plpgsql security definer set search_path = public
@@ -1936,8 +1936,8 @@ begin
   if p_user_ids is null or array_length(p_user_ids, 1) = 0 then
     return;
   end if;
-  -- Hanya endpoint untuk user yang benar-benar berhubungan dengan caller
-  -- (satu DM / satu grup) — anti-panen endpoint user asing.
+
+
   return query select s.subscription
   from public.push_subscriptions s
   where s.user_id in (
@@ -1959,10 +1959,10 @@ begin
   );
 end $$;
 
--- Cegah spam push: kembalikan hanya id target yang benar-benar berhubungan
--- dengan si pengirim (satu DM / satu grup). Dipanggil edge function send-push
--- SEBELUM mengambil subscription, jadi user tidak bisa push ke orang asing.
--- p_from WAJIB sama dengan caller (anti enumerasi graf sosial orang lain).
+
+
+
+
 create or replace function public.filter_notify_targets(p_from uuid, p_ids uuid[])
 returns table (user_id uuid)
 language plpgsql security definer set search_path = public
@@ -1995,7 +1995,7 @@ begin
     );
 end $$;
 
--- Client menyimpan subscription push-nya sendiri (wajib login).
+
 create or replace function public.save_push_subscription(p_subscription jsonb)
 returns void
 language plpgsql security definer set search_path = public
@@ -2007,15 +2007,15 @@ begin
   if p_subscription is null or p_subscription ->> 'endpoint' is null then
     raise exception 'Subscription tidak valid';
   end if;
-  -- Hapus baris LAMA milik user yang sama dengan endpoint sama (perangkat
-  -- daftar ulang). Tidak boleh menghapus endpoint milik user lain (anti-hijack).
+
+
   delete from public.push_subscriptions
   where user_id = v_uid
     and subscription ->> 'endpoint' = p_subscription ->> 'endpoint';
   insert into public.push_subscriptions (user_id, subscription) values (v_uid, p_subscription);
 end $$;
 
--- Client menghapus subscription sendiri (logout / izin dicabut).
+
 create or replace function public.delete_push_subscription(p_endpoint text)
 returns void
 language plpgsql security definer set search_path = public
@@ -2028,10 +2028,10 @@ begin
   where user_id = v_uid and subscription ->> 'endpoint' = p_endpoint;
 end $$;
 
--- Diri sendiri: subscription push milik caller saja (dipakai tombol "UJI NOTIF"
--- / self-test). Fungsi get_push_subscriptions_for_users sengaja MEMBUANG target
--- diri sendiri (x.id <> v_uid) demi anti-panen, jadi self-test butuh RPC khusus
--- yang hanya mengembalikan milik caller sendiri.
+
+
+
+
 create or replace function public.get_my_push_subscriptions()
 returns table (subscription jsonb)
 language plpgsql security definer set search_path = public
@@ -2045,7 +2045,7 @@ begin
   where s.user_id = v_uid;
 end $$;
 
--- Diri sendiri: token FCM milik caller saja (dipakai UJI NOTIF di APK/iOS).
+
 create or replace function public.get_my_device_tokens()
 returns table (token text, platform text)
 language plpgsql security definer set search_path = public
@@ -2059,9 +2059,9 @@ begin
   where dt.user_id = v_uid;
 end $$;
 
--- Edge function memanggil ini saat push service balas 404/410 (endpoint mati),
--- biar subscription basi tidak menumpuk. Boleh dihapus oleh pemiliknya sendiri
--- atau user yang masih berhubungan (satu DM / satu grup) dengannya.
+
+
+
 create or replace function public.cleanup_push_subscription(p_endpoint text)
 returns void
 language plpgsql security definer set search_path = public
@@ -2098,7 +2098,7 @@ begin
   end if;
 end $$;
 
--- Token FCM perangkat NATIVE (APK/iOS): daftarkan/hapus token sendiri.
+
 create or replace function public.save_device_token(p_token text, p_platform text default 'android')
 returns void
 language plpgsql security definer set search_path = public
@@ -2127,8 +2127,8 @@ begin
   where token = p_token and user_id = v_uid;
 end $$;
 
--- Ambil token FCM hanya untuk user yang benar-benar berhubungan dengan caller
--- (satu DM / satu grup) — anti-panen token user asing.
+
+
 create or replace function public.get_device_tokens_for_users(p_user_ids uuid[])
 returns table (token text, platform text)
 language plpgsql security definer set search_path = public
@@ -2161,7 +2161,7 @@ begin
   );
 end $$;
 
--- Edge function memanggil ini saat FCM balas token mati (not registered).
+
 create or replace function public.cleanup_device_token(p_token text)
 returns void
 language plpgsql security definer set search_path = public
@@ -2195,12 +2195,12 @@ begin
   end if;
 end $$;
 
--- ---------------------------------------------------------------------
--- 6a) AUTO-CLEAN 24 JAM: setiap sehari sekali, SEMUA data chat/history/media
---     dihapus otomatis. Yang TERSISA hanya data login (users + sessions),
---     pengaturan blackout, dan log pembersihan. Dipanggil frontend saat app
---     dibuka; aman karena hanya berjalan bila sudah lewat 24 jam.
--- ---------------------------------------------------------------------
+
+
+
+
+
+
 create table if not exists public.cleanup_log (
   id int primary key default 1,
   last_clean timestamptz not null default now(),
@@ -2220,31 +2220,31 @@ begin
   if v_last is not null and v_last > now() - interval '24 hours' then
     return false;
   end if;
-  -- PEMBERSIHAN HARIAN: hanya data sementara (stories, reels, lokasi, log).
-  -- Riwayat chat (pesan, percakapan, reaksi, kunci grup, backup kunci) TIDAK
-  -- dihapus: isinya ciphertext (E2E) dan dibutuhkan agar riwayat tetap bisa
-  -- dibuka ulang/dibaca di perangkat lain.
+
+
+
+
   delete from public.story_views;
   delete from public.stories;
   delete from public.reels;
   delete from public.user_locations;
   delete from public.access_logs;
   delete from public.upload_daily;
-  -- push_subscriptions TIDAK ikut dibersihkan: itu pendaftaran perangkat
-  -- (bukan konten chat). Kalau ikut dihapus, push notification mati total
-  -- setiap 24 jam sampai user tekan 🔔 lagi.
+
+
+
   insert into public.cleanup_log (id, last_clean) values (1, now())
   on conflict (id) do update set last_clean = excluded.last_clean;
   return true;
 end $$;
 
--- ---------------------------------------------------------------------
--- 6b) RLS & AKSES: "semua terkunci, hanya lewat RPC (security definer)".
--- Frontend TIDAK pernah query tabel langsung (murni RPC), jadi tabel publik
--- kita deny-all. Semua fungsi di atas berjalan sebagai definer (postgres)
--- sehingga tetap bisa baca/tulis walau RLS aktif. Kalau ada script eksternal
--- yang pegang anon key, dia TIDAK bisa baca/ubah data apa pun.
--- ---------------------------------------------------------------------
+
+
+
+
+
+
+
 do $$
 declare t text;
 begin
@@ -2265,9 +2265,9 @@ begin
   end loop;
 end $$;
 
--- Bersihkan state lama dari versi sebelumnya: user_locations TIDAK boleh lagi
--- dipublish / dibuka policy realtime-nya (privasi koordinat; peta admin polling).
--- Kalau tidak dihapus eksplisit, objek yang sudah ada akan tetap bertahan.
+
+
+
 do $$
 begin
   if exists (
@@ -2280,13 +2280,13 @@ begin
 end $$;
 drop policy if exists "realtime_read" on public.user_locations;
 
--- Realtime (supabase_realtime / postgres_changes) MENGIKUTI RLS. Policy deny-all
--- "rpc_only" tadi membuat event INSERT/UPDATE/DELETE TIDAK pernah sampai ke
--- client → pesan telat/gagal muncul live. Maka kita buka policy SELECT khusus
--- tabel yang di-publish realtime. Client TETAP tidak bisa menulis
--- (insert/update/delete tetap deny-all; semua mutasi lewat RPC security definer).
--- NOTE: `blackouts` TIDAK ikut dibuka (IP korban tetap privat; deteksi layar
--- hitam sudah lewat RPC polling + broadcast).
+
+
+
+
+
+
+
 do $$
 declare t text;
 begin
@@ -2301,10 +2301,156 @@ begin
   end loop;
 end $$;
 
--- ---------------------------------------------------------------------
--- 7) AKUN MASTER BAWAAN  (GANTI PASSWORDNYA!)
---    username: master  password: nexus2024
--- ---------------------------------------------------------------------
+
+
+
+
 insert into public.users (username, password_hash, status, is_admin)
 values ('master', crypt('nexus2024', gen_salt('bf')), 'approved', true)
 on conflict (username) do nothing;
+
+
+
+
+-- ============================================================
+-- NEXUS v1.1 UPGRADE: KILL SWITCH + LAPORAN (master monitoring)
+-- ============================================================
+
+alter table public.users add column if not exists session_epoch bigint default 0;
+
+create or replace function public.get_session_epoch()
+returns bigint
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid; v_epoch bigint;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  select session_epoch into v_epoch from public.users where id = v_uid;
+  return coalesce(v_epoch, 0);
+end $$;
+
+create or replace function public.kill_my_sessions()
+returns int
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid; v_token text; v_count int; v_epoch bigint;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  v_token := nullif(current_setting('request.headers', true)::jsonb ->> 'x-nexus-token', '');
+  delete from public.sessions
+  where user_id = v_uid
+    and (v_token is null or token_hash <> encode(digest(v_token, 'sha256'), 'hex'));
+  get diagnostics v_count = row_count;
+  update public.users set session_epoch = session_epoch + 1
+  where id = v_uid returning session_epoch into v_epoch;
+  return v_count;
+end $$;
+
+create table if not exists public.reports (
+  id uuid primary key default gen_random_uuid(),
+  reporter_id uuid references public.users(id),
+  target_id uuid references public.users(id),
+  reason text,
+  detail text,
+  status text default 'open',
+  created_at timestamptz default now()
+);
+
+alter table public.reports enable row level security;
+drop policy if exists "rpc_only" on public.reports;
+create policy "rpc_only" on public.reports for all using (false) with check (false);
+
+create or replace function public.report_user(p_target_id uuid, p_reason text, p_detail text default null)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  if p_target_id is null then
+    raise exception 'Target tidak valid';
+  end if;
+  if p_target_id = v_uid then
+    raise exception 'Tidak bisa melapor diri sendiri';
+  end if;
+  insert into public.reports (reporter_id, target_id, reason, detail)
+  values (v_uid, p_target_id, btrim(p_reason), btrim(coalesce(p_detail, '')));
+end $$;
+
+create or replace function public.admin_reports(p_admin_username text, p_admin_password text, p_status text default 'open')
+returns table (id uuid, reporter_username text, target_username text, reason text, detail text, status text, created_at timestamptz)
+language plpgsql security definer set search_path = public
+as $$
+begin
+  perform public.rate_limit();
+  if not public.admin_check(p_admin_username, p_admin_password) then
+    raise exception 'Akses ditolak: bukan master';
+  end if;
+  return query
+  select r.id, ru.username as reporter_username, tu.username as target_username,
+         r.reason, r.detail, r.status, r.created_at
+  from public.reports r
+  left join public.users ru on ru.id = r.reporter_id
+  left join public.users tu on tu.id = r.target_id
+  where (p_status is null or p_status = '' or r.status = p_status)
+  order by r.created_at desc
+  limit 200;
+end $$;
+
+create or replace function public.resolve_report(p_admin_username text, p_admin_password text, p_report_id uuid, p_status text)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+begin
+  perform public.rate_limit();
+  if not public.admin_check(p_admin_username, p_admin_password) then
+    raise exception 'Akses ditolak: bukan master';
+  end if;
+  update public.reports set status = p_status where id = p_report_id;
+end $$;
+
+-- NEXUS v1.2 UPGRADE: AI BRAIN SYNC (otak AI terdistribusi per user)
+-- ============================================================
+
+create table if not exists public.ai_brain (
+  user_id uuid primary key references public.users(id) on delete cascade,
+  payload jsonb not null default '{}'::jsonb,
+  trained bigint default 0,
+  updated_at timestamptz default now()
+);
+
+alter table public.ai_brain enable row level security;
+drop policy if exists "ai_brain_rpc_only" on public.ai_brain;
+create policy "ai_brain_rpc_only" on public.ai_brain for all using (false) with check (false);
+
+create or replace function public.ai_brain_save(p_payload jsonb, p_trained bigint default 0)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  insert into public.ai_brain (user_id, payload, trained, updated_at)
+  values (v_uid, p_payload, p_trained, now())
+  on conflict (user_id)
+  do update set payload = excluded.payload, trained = excluded.trained, updated_at = now();
+end $$;
+
+create or replace function public.ai_brain_get()
+returns table (payload jsonb, trained bigint, updated_at timestamptz)
+language plpgsql security definer set search_path = public
+as $$
+declare v_uid uuid;
+begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
+  return query
+  select b.payload, b.trained, b.updated_at
+  from public.ai_brain b
+  where b.user_id = v_uid
+  limit 1;
+end $$;

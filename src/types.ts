@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 export type User = {
   id: string;
   username: string;
@@ -101,6 +108,16 @@ export type AccessLog = {
   event: string;
   ip?: string;
   user_agent?: string;
+  created_at: string;
+};
+
+export type ReportRow = {
+  id: string;
+  reporter_username: string;
+  target_username: string;
+  reason: string;
+  detail: string;
+  status: string;
   created_at: string;
 };
 

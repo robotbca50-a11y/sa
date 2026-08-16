@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Send, Smile, X, ImagePlus, Paperclip, Mic, MicOff } from 'lucide-react';

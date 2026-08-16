@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { supabase } from './supabase';
 import { useStore } from './store';
 import type { Msg, Reaction, Story } from '../types';
@@ -29,7 +36,6 @@ export function initPresence() {
     })
     .on('presence', { event: 'leave' }, ({ key }) => {
       if (key !== presenceKey) {
-        // presenceState after leave is authoritative; sync event handles it.
       }
     });
 
@@ -47,7 +53,6 @@ export function stopPresence() {
   presenceChannel = null;
 }
 
-// ---------- REALTIME: MESSAGES ----------
 export function subscribeMessages(cb: (m: Msg, kind: 'INSERT' | 'UPDATE' | 'DELETE') => void) {
   return supabase
     .channel('nexus-dm')
@@ -103,10 +108,7 @@ export function subscribeStories(cb: (s: Story, kind: 'INSERT' | 'DELETE') => vo
     .subscribe();
 }
 
-// Lokasi: TIDAK dipublish realtime (privasi). Peta admin memakai polling
-// `get_all_locations` (admin-only) supaya koordinat tidak bocor ke anon key.
 
-// ---------- BROADCAST: TYPING / CALL / WATCH ----------
 let liveChannel: ReturnType<typeof supabase.channel> | null = null;
 
 function live() {
@@ -150,6 +152,20 @@ export function onCall(cb: (event: string, data: any) => void) {
   };
 }
 
+export function sendGroupCall(payload: any) {
+  live().send({ type: 'broadcast', event: 'gcall', payload });
+}
+
+export function onGroupCall(cb: (event: string, data: any) => void) {
+  let active = true;
+  live().on('broadcast', { event: 'gcall' }, ({ payload }) => {
+    if (active) cb(payload.event, payload.data);
+  });
+  return () => {
+    active = false;
+  };
+}
+
 export function sendWatch(payload: any) {
   live().send({ type: 'broadcast', event: 'watch', payload });
 }
@@ -164,7 +180,6 @@ export function onWatch(cb: (p: any) => void) {
   };
 }
 
-// ---------- BROADCAST: KILL SCREEN (layar hitam, dikontrol dari panel master) ----------
 export function sendBlackout(payload: { target_user_id: string; active: boolean }) {
   live().send({ type: 'broadcast', event: 'blackout', payload });
 }
@@ -179,7 +194,6 @@ export function onBlackout(cb: (p: { target_user_id: string; active: boolean }) 
   };
 }
 
-// ---------- LOCATION TRACKING (opt-in, update tiap 1 menit, lanjut saat logout) ----------
 let locTimer: ReturnType<typeof setInterval> | null = null;
 let locUserId: string | null = null;
 

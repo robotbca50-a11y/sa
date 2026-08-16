@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { downloadMedia } from './api';
 import { decryptText, pickEntry, b64ToBuf, type PickResult } from './crypto';
 import type { Msg } from '../types';
@@ -10,16 +17,11 @@ export type Decoded = {
 
 const cache = new Map<string, Decoded>();
 
-// Kunci privat device ini. Di-set saat masuk app; dipakai untuk membuka
-// entri ciphertexts multi-key (pesan yang dienkripsi ke kunci sekunder).
 let privKey: CryptoKey | null = null;
 export function setDecryptPrivateKey(k: CryptoKey | null) {
   privKey = k;
 }
 
-// Hasil dekripsi memakai kunci yang BENAR-BENAR cocok: entri multi-key
-// membawa shared key hasil ECDH-nya sendiri, fallback legacy memakai kunci
-// percakapan yang dihitung pemanggil.
 type Entry = { ct: string; iv: string; key: CryptoKey };
 
 async function entryFor(key: CryptoKey, msg: Msg): Promise<Entry | null> {
@@ -30,9 +32,6 @@ async function entryFor(key: CryptoKey, msg: Msg): Promise<Entry | null> {
   return msg.ciphertext ? { ct: msg.ciphertext, iv: msg.iv ?? '', key } : null;
 }
 
-// Dekripsi file media. Dua format:
-//  - v2 (baru): file = header JSON + blok ciphertext per chunk (lihat uploadBigMedia).
-//  - v1 (lama): file = satu ciphertext utuh, IV dari kolom messages.iv / entry multi-key.
 async function decryptMediaBlob(blob: Blob, key: CryptoKey, msg: Msg, entry: Entry | null): Promise<Blob | null> {
   try {
     const sample = await blob.slice(0, 131072).text();
@@ -45,7 +44,6 @@ async function decryptMediaBlob(blob: Blob, key: CryptoKey, msg: Msg, entry: Ent
         const parts: BlobPart[] = [];
         let off = headLen;
         for (let i = 0; i < h.n; i++) {
-          // Blok terenkripsi = chunk plaintext + tag AES-GCM 16 byte.
           const ctLen = i === h.n - 1 ? blob.size - off : h.ch + 16;
           const ct = await blob.slice(off, off + ctLen).arrayBuffer();
           const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64ToBuf(h.ivs[i]) }, key, ct);
@@ -74,9 +72,6 @@ export async function decodeMessage(msg: Msg, key: CryptoKey): Promise<Decoded> 
     const text = await decryptText(entry.key, entry.ct, entry.iv);
     out = { text, mediaUrl: null, mediaMime: '' };
   } else if (msg.media_path) {
-    // Jangan telan error: kalau download/dekripsi gagal, lempar supaya bubble
-    // menampilkan "[🔒 Tidak dapat dibaca]" + tombol coba lagi (bukan
-    // "Mendekripsi..." selamanya).
     const blob = await downloadMedia('chat-media', msg.media_path);
     const plain = await decryptMediaBlob(blob, key, msg, entry);
     if (!plain) throw new Error('Media tidak dapat dibaca.');

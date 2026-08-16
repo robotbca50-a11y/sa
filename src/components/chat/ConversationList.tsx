@@ -1,7 +1,15 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { useState } from 'react';
-import { Plus, Search, MessageSquarePlus, Users, Pin } from 'lucide-react';
+import { Plus, Search, MessageSquarePlus, Users, Pin, Archive, ArchiveRestore } from 'lucide-react';
 import Avatar, { avatarUrl } from '../Avatar';
 import { isPinned, togglePin } from '../../lib/pins';
+import { isArchived, toggleArchived, usePrivacyVersion } from '../../lib/privacy';
 import type { ConversationItem } from '../../types';
 
 function fmtTime(iso?: string) {
@@ -29,9 +37,13 @@ export default function ConversationList({
   ghostOn: boolean;
 }) {
   const [q, setQ] = useState('');
+  const [archivedView, setArchivedView] = useState(false);
   const [, setPinnedVer] = useState(0);
+  usePrivacyVersion();
+  const archCount = items.filter((i) => isArchived(i.key)).length;
   const filtered = items
     .filter((i) => i.name.toLowerCase().includes(q.toLowerCase()))
+    .filter((i) => (archivedView ? isArchived(i.key) : !isArchived(i.key)))
     .sort((a, b) => Number(isPinned(b.key)) - Number(isPinned(a.key)));
 
   return (
@@ -64,12 +76,24 @@ export default function ConversationList({
       </div>
 
       <div className="flex-1 overflow-y-auto">
+        {archCount > 0 && (
+          <button
+            onClick={() => setArchivedView((v) => !v)}
+            className={`w-full flex items-center gap-2 px-4 py-2 text-xs font-mono tracking-wider border-b border-white/5 transition-colors ${
+              archivedView ? 'bg-neon/10 text-neon border-neon/30' : 'text-slate-400 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <Archive size={13} />
+            {archivedView ? '‹ KEMBALI KE CHAT' : `ARSIP (${archCount})`}
+          </button>
+        )}
         {filtered.length === 0 && (
           <div className="text-center text-slate-600 font-mono text-xs mt-10">tidak ada kanal</div>
         )}
         {filtered.map((it) => {
           const isActive = it.key === activeKey;
           const pinned = isPinned(it.key);
+          const archived = isArchived(it.key);
           return (
             <div
               key={it.key}
@@ -124,6 +148,17 @@ export default function ConversationList({
                 title={pinned ? 'Lepas pin' : 'Pin'}
               >
                 <Pin size={13} className={pinned ? 'fill-amber text-amber' : ''} />
+              </button>
+              <button
+                className="absolute right-9 bottom-2 text-slate-600 hover:text-neon opacity-0 group-hover:opacity-100 transition-opacity"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleArchived(it.key);
+                  setPinnedVer((v) => v + 1);
+                }}
+                title={archived ? 'Batalkan arsip' : 'Arsipkan'}
+              >
+                {archived ? <ArchiveRestore size={13} /> : <Archive size={13} />}
               </button>
             </div>
           );

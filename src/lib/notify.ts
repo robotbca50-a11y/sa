@@ -1,10 +1,15 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { useStore } from './store';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase';
 import { loadToken } from './session';
 import { nxRpc } from './api';
 
-// VAPID public key dari pasangan key yang di-generate untuk NEXUS.
-// Private key-nya dipakai edge function `send-push` (env / bawaan).
 export const VAPID_PUBLIC_KEY =
   'BCvqpN_i_rOrbBAPO-daH_qM842sebVxaI7w3OzmUl88X6-V0n-f04crvOXceOr0CzDhIcKb54Hmbtms8kcuK20';
 
@@ -15,8 +20,6 @@ export function notifSupported() {
   return 'Notification' in window && 'PushManager' in window;
 }
 
-// iOS Safari hanya mendukung web push kalau situs dipasang ke Home Screen
-// (PWA standalone) sejak iOS 16.4. Di tab Safari biasa PushManager tidak ada.
 export function isIOS() {
   return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 }
@@ -27,8 +30,6 @@ export function needsIOSInstall() {
   return isIOS() && !isIOSStandalone();
 }
 
-// Keep-warm: panggil edge function send-push tanpa kerja berat biar tidak
-// cold-start (cold start = penyebab utama notif telat beberapa detik).
 export async function warmPush(): Promise<void> {
   const token = loadToken();
   if (!token) return;
@@ -44,13 +45,9 @@ export async function warmPush(): Promise<void> {
       body: JSON.stringify({ warm: true }),
     });
   } catch {
-    /* noop */
   }
 }
 
-// Daftarkan service worker saja, TANPA meminta izin. Permission di browser
-// mobile (Android Chrome & iOS Safari) HANYA bisa diminta dari user gesture,
-// jadi izin diminta via ensurePush() yang dipicu klik tombol 🔔.
 export async function initNotifications() {
   if (!('serviceWorker' in navigator)) return;
   try {
@@ -107,8 +104,6 @@ export async function savePushSub(sub: PushSubscription | null): Promise<boolean
   }
 }
 
-// Dipanggil dari tombol bel (user gesture): minta izin (kalau belum) lalu
-// subscribe + simpan ke database supaya edge function bisa kirim push.
 export async function ensurePush(): Promise<boolean> {
   if (!notifSupported()) return false;
   if (!swReady) await initNotifications();
@@ -123,10 +118,6 @@ export async function ensurePush(): Promise<boolean> {
   return ok;
 }
 
-// Dipanggil saat app dibuka (TANPA meminta izin): kalau izin sudah granted,
-// pastikan subscription perangkat ini tetap tersimpan di DB. Menutup lubang
-// kalau baris sempat hilang (misal auto-clean versi lama / perangkat logout),
-// biar notif tetap nyala tanpa perlu tekan 🔔 ulang.
 export async function persistPushSub(): Promise<boolean> {
   if (!notifSupported() || Notification.permission !== 'granted') return false;
   if (!swReady) await initNotifications();
@@ -134,7 +125,6 @@ export async function persistPushSub(): Promise<boolean> {
   return savePushSub(sub);
 }
 
-// Saat logout: hapus subscription dari DB + matikan push perangkat ini.
 export async function unsubscribePush(): Promise<void> {
   try {
     if (!swReady) await initNotifications();
@@ -144,15 +134,9 @@ export async function unsubscribePush(): Promise<void> {
       await sub.unsubscribe();
     }
   } catch {
-    /* noop */
   }
 }
 
-// Kirim push ke perangkat penerima lewat edge function `send-push`.
-// Dipanggil SETELAH pesan berhasil terkirim. `body` = cuplikan isi pesan.
-// Gagal tidak mempengaruhi chat.
-// CATATAN: TIDAK bergantung pada pushActive si pengirim — yang penting penerima
-// yang sudah aktifkan push. Edge function memvalidasi via token + filter target.
 export async function triggerPush(recipientIds: string[], title: string, body: string, url = '/', convId?: string) {
   if (!recipientIds.length) return;
   const token = loadToken();
@@ -169,13 +153,9 @@ export async function triggerPush(recipientIds: string[], title: string, body: s
       body: JSON.stringify({ user_ids: recipientIds.slice(0, 50), title, body, url, convId }),
     });
   } catch {
-    /* noop */
   }
 }
 
-// Uji notif ke perangkat SENDIRI (tombol "UJI NOTIF"). Menjamin subscription
-// tersimpan lalu mengirim push ke diri sendiri; mengembalikan hasil detail
-// (sent berapa, dan alasan kalau gagal) untuk memudahkan debug di perangkat.
 export async function testPushSelf(uid: string): Promise<{ ok: boolean; sent: number; results: any[]; err?: string }> {
   if (!notifSupported()) return { ok: false, sent: 0, results: [], err: 'Browser ini tidak mendukung push notification.' };
   if (!swReady) await initNotifications();
@@ -214,15 +194,12 @@ export async function testPushSelf(uid: string): Promise<{ ok: boolean; sent: nu
   }
 }
 
-// Notifikasi sistem — hanya muncul saat tab tersembunyi (di background), biar
-// tidak dobel dengan toast in-app dan tidak mengganggu user yang sedang buka.
 export function nativeNotify(title: string, body?: string) {
   if (!notifSupported() || Notification.permission !== 'granted') return;
   if (!document.hidden) return;
   try {
     new Notification(title, { body, icon: '/nexus.svg', tag: 'nexus' });
   } catch {
-    /* noop */
   }
 }
 
@@ -238,8 +215,6 @@ export function appNotify(title: string, body: string, opts: { icon?: string; on
   if (document.hidden) {
     document.title = `● ${title} — NEXUS`;
   }
-  // Notifikasi sistem muncul saat app di background — tetap muncul walau user
-  // sedang di tab lain atau PWA yang dipasang di layar utama.
   nativeNotify(title, body);
 }
 

@@ -1,18 +1,30 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
-import { CornerUpLeft, Smile, Pencil, Trash2, Lock, Clock, Music, RotateCcw, Upload, AlertTriangle, X, Copy } from 'lucide-react';
+import { CornerUpLeft, Smile, Pencil, Trash2, Lock, Clock, Music, RotateCcw, Upload, AlertTriangle, X, Copy, Forward, Languages, ShieldAlert } from 'lucide-react';
 import { decodeMessage, evictCache } from '../../lib/decrypt';
 import type { Msg, Reaction } from '../../types';
 import Avatar, { avatarUrl } from '../Avatar';
 import EmojiPicker from './EmojiPicker';
+import { translatePhrase, learnSpam, getAiPrefs, classifySpam } from '../../lib/ai';
+import { appNotify } from '../../lib/notify';
+
+function looksIndonesian(text: string): boolean {
+  return /(yang|aku|kamu|gak|nggak|ga|dengan|sudah|tidak|ada|itu|ini|bisa|mau)\b/i.test(text);
+}
 
 function fmtTime(iso: string) {
   const d = new Date(iso);
   return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
 }
 
-// Reaksi cepat ala WhatsApp/IG: tahan lama pesan → muncul bar ini.
 const REACT_QUICK = ['❤️', '👍', '😂', '😮', '😢', '😭', '🔥', '🥳'];
 
 export default function MessageBubble({
@@ -32,6 +44,7 @@ export default function MessageBubble({
   onEdit,
   onDelete,
   onRetry,
+  onForward,
 }: {
   msg: Msg;
   keyObj: CryptoKey;
@@ -49,6 +62,7 @@ export default function MessageBubble({
   onEdit: (text: string) => void;
   onDelete: () => void;
   onRetry: () => void;
+  onForward?: () => void;
 }) {
   const [decoded, setDecoded] = useState<{ text: string; mediaUrl: string | null; mediaMime: string } | null>(null);
   const [picker, setPicker] = useState(false);
@@ -59,8 +73,8 @@ export default function MessageBubble({
   const [swipe, setSwipe] = useState(0);
   const [menu, setMenu] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
+  const [translated, setTranslated] = useState<string | null>(null);
 
-  // gesture state
   const startRef = useRef<{ x: number; y: number } | null>(null);
   const movedRef = useRef(false);
   const longFiredRef = useRef(false);
@@ -83,8 +97,6 @@ export default function MessageBubble({
       () => {
         if (!live) return;
         setDecodeFailed(true);
-        // Dekripsi di background: sekali otomatis coba ulang ~4 detik.
-        // Kalau masih gagal, muncul tombol "Coba lagi" manual.
         if (!autoRetriedRef.current && msg.media_path) {
           autoRetriedRef.current = true;
           window.setTimeout(() => {
@@ -108,8 +120,6 @@ export default function MessageBubble({
     };
   }, []);
 
-  // ---------- GESTURE: swipe kanan = balas, swipe kiri = menu aksi,
-  // tahan = menu aksi (reaksi cepat + hapus), dobel tap = ❤️ ----------
   function gDown(e: React.PointerEvent) {
     if ((e.target as HTMLElement).closest('button, a, textarea, input, video, audio, .no-gesture')) return;
     startRef.current = { x: e.clientX, y: e.clientY };
@@ -221,6 +231,8 @@ export default function MessageBubble({
             : 'missing')
     : null;
 
+  const spamVerdict = !isMine && decoded?.text && getAiPrefs().spamFilter ? classifySpam(decoded.text) : false;
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 8, scale: 0.97 }}
@@ -320,13 +332,47 @@ export default function MessageBubble({
                           try {
                             navigator.clipboard?.writeText(decoded.text).catch(() => {});
                           } catch {
-                            /* clipboard tidak tersedia */
                           }
                           setMenu(false);
                         }}
                         className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-white hover:bg-white/10"
                       >
                         <Copy size={15} className="text-arc-lighter" style={{ color: '#a78bfa' }} /> Salin teks
+                      </button>
+                    )}
+                    {decoded?.text && (
+                      <button
+                        onClick={() => {
+                          const to = looksIndonesian(decoded.text) ? 'en' : 'id';
+                          setTranslated(translatePhrase(decoded.text, to));
+                          setMenu(false);
+                        }}
+                        className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-white hover:bg-white/10"
+                      >
+                        <Languages size={15} className="text-lime" /> Terjemahkan (AI offline)
+                      </button>
+                    )}
+                    {decoded?.text && !isMine && (
+                      <button
+                        onClick={() => {
+                          learnSpam(decoded.text, true);
+                          setMenu(false);
+                          appNotify('DILAPORKAN', 'Pesan ditandai spam. Filter spam NEXUS AI jadi lebih pintar.', { icon: '🛡️' });
+                        }}
+                        className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-white hover:bg-white/10"
+                      >
+                        <ShieldAlert size={15} className="text-amber" /> Lapor spam (melatih AI)
+                      </button>
+                    )}
+                    {onForward && (
+                      <button
+                        onClick={() => {
+                          onForward();
+                          setMenu(false);
+                        }}
+                        className="flex items-center gap-2 px-2 py-2.5 rounded-lg text-left text-sm text-white hover:bg-white/10"
+                      >
+                        <Forward size={15} className="text-neon" /> Forward
                       </button>
                     )}
                     {isMine && !decoded?.mediaUrl && (
@@ -474,6 +520,20 @@ export default function MessageBubble({
               ) : (
                 decoded.text
               )}
+              {translated !== null && (
+                <div className="mt-2 pt-2 border-t border-lime/30">
+                  <div className="flex items-center gap-1.5 text-[10px] font-mono text-lime/70 mb-1">
+                    <Languages size={10} /> AI TERJEMAHAN
+                  </div>
+                  <div className="text-slate-300">{translated}</div>
+                  <button
+                    onClick={() => setTranslated(null)}
+                    className="mt-1.5 text-[10px] font-mono text-slate-500 hover:text-white no-gesture"
+                  >
+                    tutup terjemahan
+                  </button>
+                </div>
+              )}
             </div>
           ) : decodeFailed ? (
             <div className="flex items-center gap-2 text-xs text-virus/80 font-mono">
@@ -499,6 +559,11 @@ export default function MessageBubble({
             </div>
           )}
 
+          {spamVerdict && (
+            <div className="mt-1.5 text-[10px] font-mono text-amber/80 flex items-center gap-1">
+              <ShieldAlert size={11} /> kemungkinan spam
+            </div>
+          )}
           <div className="flex items-center gap-1 justify-end mt-1">
             {msg.edited_at && <span className="text-[9px] text-slate-500 font-mono">EDIT</span>}
             <span className="text-[9px] text-slate-500 font-mono">{fmtTime(msg.created_at)}</span>
@@ -545,9 +610,9 @@ export default function MessageBubble({
           </div>
         )}
 
-        {/* hover menu (desktop) */}
+        {}
         <div
-          className={`absolute ${isMine ? 'left-full' : 'right-full'} top-0 ml-2 mr-2 hidden group-hover:flex flex-col gap-0.5 glass rounded-lg p-1 z-20`}
+          className={`absolute ${isMine ? 'left-full' : 'right-full'} top-0 ml-2 mr-2 hidden [@media(hover:hover)]:group-hover:flex flex-col gap-0.5 glass rounded-lg p-1 z-20`}
         >
           <button className="p-1.5 rounded hover:bg-white/10 text-slate-300" onClick={() => setPicker((v) => !v)} title="React">
             <Smile size={14} />

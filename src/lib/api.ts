@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase';
 import { loadToken, saveToken, clearSession } from './session';
 import { bufToB64 } from './crypto';
@@ -10,6 +17,7 @@ import type {
   Reaction,
   LocRow,
   AccessLog,
+  ReportRow,
 } from '../types';
 
 function unwrap<T>(r: { data: T | null; error: any }, fallback: T): T {
@@ -45,7 +53,6 @@ export function markBrowserRegistered() {
   try {
     localStorage.setItem(REGISTERED_KEY, '1');
   } catch {
-    /* noop */
   }
 }
 
@@ -83,8 +90,7 @@ export async function nxRpc(name: string, args: Record<string, unknown> = {}, re
     if (!res.ok) {
       const bodyErr = (data && typeof data === 'object' && (data as { message?: unknown }).message) || text;
       const msg = String(bodyErr || `HTTP ${res.status}`);
-      // Kalau server lagi kena rate-limit (burst sesaat / IP wifi bersama), tunggu
-      // sebentar lalu coba lagi — jangan langsung menyerah & menampilkan error.
+    
       if (retries > 0 && /terlalu banyak permintaan/i.test(msg)) {
         await new Promise((r) => setTimeout(r, 600 + Math.random() * 600));
         return nxRpc(name, args, retries - 1);
@@ -97,7 +103,7 @@ export async function nxRpc(name: string, args: Record<string, unknown> = {}, re
   }
 }
 
-// ---------- AUTH / ADMIN (backend lama) ----------
+
 export async function getClientIp(): Promise<string | null> {
   try {
     const ctrl = new AbortController();
@@ -174,7 +180,6 @@ export async function rpcLogout() {
   try {
     await nxRpc('logout_user', { p_token: loadToken() ?? '' });
   } catch {
-    /* noop */
   }
   clearSession();
 }
@@ -183,6 +188,59 @@ export async function rpcGetBlackout(userId: string): Promise<boolean> {
   const { data, error } = await nxRpc('get_blackout', { p_user_id: userId });
   if (error) throw new Error(normalizeErr(error.message));
   return !!data;
+}
+
+export async function rpcKillMySessions(): Promise<number> {
+  const { data, error } = await nxRpc('kill_my_sessions', {});
+  if (error) throw new Error(normalizeErr(error.message));
+  return Number(data ?? 0);
+}
+
+export async function rpcGetSessionEpoch(): Promise<number> {
+  const { data, error } = await nxRpc('get_session_epoch', {});
+  if (error) throw new Error(normalizeErr(error.message));
+  return Number(data ?? 0);
+}
+
+export async function rpcReportUser(targetId: string, reason: string, detail?: string) {
+  const { error } = await nxRpc('report_user', {
+    p_target_id: targetId,
+    p_reason: reason,
+    p_detail: detail ?? null,
+  });
+  if (error) throw new Error(normalizeErr(error.message));
+}
+
+export async function rpcAdminReports(adminUser: string, adminPass: string, status = 'open'): Promise<ReportRow[]> {
+  const { data, error } = await nxRpc('admin_reports', {
+    p_admin_username: adminUser,
+    p_admin_password: adminPass,
+    p_status: status,
+  });
+  if (error) throw new Error(normalizeErr(error.message));
+  return (data as unknown as ReportRow[]) ?? [];
+}
+
+export async function rpcResolveReport(adminUser: string, adminPass: string, reportId: string, status: string) {
+  const { error } = await nxRpc('resolve_report', {
+    p_admin_username: adminUser,
+    p_admin_password: adminPass,
+    p_report_id: reportId,
+    p_status: status,
+  });
+  if (error) throw new Error(normalizeErr(error.message));
+}
+
+export async function rpcAiBrainSave(payload: unknown, trained: number) {
+  const { error } = await nxRpc('ai_brain_save', { p_payload: payload, p_trained: trained });
+  if (error) throw new Error(normalizeErr(error.message));
+}
+
+export async function rpcAiBrainGet(): Promise<{ payload: unknown; trained: number; updated_at: string } | null> {
+  const { data, error } = await nxRpc('ai_brain_get', {});
+  if (error) throw new Error(normalizeErr(error.message));
+  const rows = data as { payload: unknown; trained: number; updated_at: string }[] | null;
+  return rows && rows.length > 0 ? rows[0] : null;
 }
 
 export async function rpcGetBlackoutPublic(username: string): Promise<boolean> {
@@ -333,7 +391,6 @@ export async function rpcUpdateUsername(newUsername: string) {
   if (error) throw new Error(normalizeErr(error.message));
 }
 
-// ---------- DIRECTORY / DM ----------
 export async function rpcListUsers(): Promise<User[]> {
   const { data, error } = await nxRpc('list_approved_users');
   if (error) throw new Error(normalizeErr(error.message));
@@ -491,7 +548,6 @@ export async function rpcRemoveReaction(messageId: string, userId: string, emoji
   if (error) throw new Error(normalizeErr(error.message));
 }
 
-// ---------- GRUP ----------
 export async function rpcGroupCreate(
   name: string,
   creator: string,
@@ -617,9 +673,6 @@ export async function rpcGroupRemoveReaction(messageId: string, userId: string, 
   if (error) throw new Error(normalizeErr(error.message));
 }
 
-// ---------- GROUP KEY (E2E grup) ----------
-// publicKey: kunci publik PEMBERI (saver). memberKey: kunci publik member yang dituju.
-// Null = pakai kunci utama akun si pemanggil.
 export async function rpcSaveGroupKey(
   groupId: string,
   userId: string,
@@ -651,7 +704,6 @@ export async function rpcGetGroupKey(
   return (data as unknown as { enc_key: string; iv: string; public_key: string | null }[]) ?? null;
 }
 
-// Backup kunci grup (recovery device baru), dienkripsi kunci password akun.
 export async function rpcSaveGroupKeyBackup(groupId: string, encKey: string, iv: string) {
   const { error } = await nxRpc('group_save_key_backup', {
     p_group_id: groupId,
@@ -671,14 +723,12 @@ export async function rpcGetGroupKeyBackup(
   return (data as unknown as { enc_key: string; iv: string }[])?.[0] ?? null;
 }
 
-// Semua kunci publik (utama + sekunder) user approved untuk enkripsi multi-key.
 export async function rpcGetAllUserKeys(): Promise<{ user_id: string; public_key: string }[]> {
   const { data, error } = await nxRpc('get_all_user_keys');
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as { user_id: string; public_key: string }[]) ?? [];
 }
 
-// ---------- STORY ----------
 export async function rpcAddStory(userId: string, mediaPath: string, caption: string, kind: string) {
   const { error } = await nxRpc('story_add', {
     p_user_id: userId,
@@ -723,7 +773,6 @@ export async function rpcStoryViews(storyId: string): Promise<any[]> {
   return (data as any[]) ?? [];
 }
 
-// ---------- REELS ----------
 export async function rpcAddReel(p: {
   userId: string;
   source: string;
@@ -752,7 +801,6 @@ export async function rpcDeleteReel(id: string, userId: string) {
   if (error) throw new Error(normalizeErr(error.message));
 }
 
-// ---------- LOKASI & LOG ----------
 export async function rpcUpsertLocation(userId: string, lat: number, lng: number, accuracy: number) {
   const { error } = await nxRpc('upsert_location', {
     p_user_id: userId,
@@ -773,9 +821,6 @@ export async function rpcLogAccess(userId: string, event: string, ip?: string, u
   if (error) throw new Error(normalizeErr(error.message));
 }
 
-// ---------- STORAGE ----------
-// Batas global plan Free Supabase: 50 MB per file (bucket chat-media sudah di-set 512MB,
-// tapi limit efektif = min(global tenant, bucket) = 50MB).
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const TUS_CHUNK = 6 * 1024 * 1024;
 const TUS_CLASSIC_THRESHOLD = 6 * 1024 * 1024;
@@ -884,19 +929,10 @@ export async function uploadMedia(bucket: string, path: string, blob: Blob, user
   if (error) throw new Error(normalizeErr(error.message));
 }
 
-// ---------- MEDIA BESAR (host Railway, >50MB — di luar batas Supabase Free) ----------
 export const MEDIA_BASE = 'https://sa-production-244d.up.railway.app';
 const MAX_BIG_UPLOAD_BYTES = 1024 * 1024 * 1024;
 const CHUNK = 4 * 1024 * 1024;
 
-// Format file media versi 2 (chunked):
-//   <header>\n  =>  {"v":1,"ch":<chunkSize>,"n":<count>,"size":<plainSize>,"mime":"...","ivs":[...]}
-//   lalu n blok ciphertext AES-GCM (tiap blok = chunk plaintext + tag 16 byte).
-// Disimpan SEKALI di file (host media) DAN ringkas di kolom messages.ciphertext
-// (jauh di bawah limit 50K DB). Kolom messages.iv = IV chunk pertama.
-// Dekripsi: baca header dari file, decrypt tiap blok dengan ivs[i].
-// Rencana (header + IV) dibuat DULU supaya pesan bisa tampil instan di kedua
-// sisi ("uploading") sebelum file benar-benar diunggah — WA-like.
 export type MediaPlan = { header: string; iv: string; ivs: Uint8Array[]; size: number };
 
 export function planBigMedia(file: Blob): MediaPlan {
@@ -963,18 +999,27 @@ export function uploadBigMedia(
     });
 
     const ext = (file.type.split('/')[1] ?? 'bin').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'bin';
+    const UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
     try {
       type StreamInit = RequestInit & { duplex?: 'half' };
-      const res = await fetch(`${MEDIA_BASE}/api/upload`, {
-        method: 'POST',
-        headers: {
-          'x-nexus-token': token,
-          'x-file-ext': ext,
-          'Content-Type': 'application/octet-stream',
-        },
-        body,
-        duplex: 'half',
-      } as StreamInit);
+      const ctrl = new AbortController();
+      const timer = window.setTimeout(() => ctrl.abort(), UPLOAD_TIMEOUT_MS);
+      let res: Response;
+      try {
+        res = await fetch(`${MEDIA_BASE}/api/upload`, {
+          method: 'POST',
+          headers: {
+            'x-nexus-token': token,
+            'x-file-ext': ext,
+            'Content-Type': 'application/octet-stream',
+          },
+          body,
+          signal: ctrl.signal,
+          duplex: 'half',
+        } as StreamInit);
+      } finally {
+        window.clearTimeout(timer);
+      }
       const data = await res.json().catch(() => null);
       if (res.ok && data?.path) {
         resolve({ path: data.path });
@@ -982,8 +1027,6 @@ export function uploadBigMedia(
         reject(new Error(data?.error || `Upload gagal (${res.status}).`));
       }
     } catch (e) {
-      // Browser lama tanpa streaming request body: fallback XHR. Bangun blob
-      // terenkripsi utuh dulu (memori naik ~ ukuran file), lalu kirim sekaligus.
       try {
         const parts: BlobPart[] = [headBytes];
         for (let ci = 0; ci < n; ci++) {
@@ -998,12 +1041,14 @@ export function uploadBigMedia(
         const blob = new Blob(parts, { type: file.type || 'application/octet-stream' });
         const xhr = new XMLHttpRequest();
         xhr.open('POST', `${MEDIA_BASE}/api/upload`);
+        xhr.timeout = UPLOAD_TIMEOUT_MS;
         xhr.setRequestHeader('x-nexus-token', token);
         xhr.setRequestHeader('x-file-ext', ext);
         xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) onProgress?.(e.loaded, e.total);
         };
+        xhr.ontimeout = () => reject(new Error('Upload kehabisan waktu — periksa koneksi.'));
         xhr.onload = () => {
           try {
             const d = JSON.parse(xhr.responseText) as { path?: string; error?: string };
@@ -1019,13 +1064,12 @@ export function uploadBigMedia(
         xhr.onerror = () => reject(new Error('Upload gagal — periksa koneksi.'));
         xhr.send(blob);
       } catch (e2) {
-        reject(e instanceof Error ? e : new Error(String(e2)));
+        reject(e2 instanceof Error ? e2 : new Error(String(e2)));
       }
     }
   });
 }
 
-// Hapus semua media besar milik user di host Railway (dipanggil saat auto-clean 24 jam).
 export async function wipeBigMedia() {
   try {
     const token = loadToken();
@@ -1035,11 +1079,9 @@ export async function wipeBigMedia() {
       headers: { 'x-nexus-token': token },
     });
   } catch {
-    /* noop */
   }
 }
 
-// Foto profil: maks 5 MB, folder avatars/{uid}.
 export async function uploadAvatar(uid: string, blob: Blob) {
   if (blob.size > 5 * 1024 * 1024) {
     throw new Error('Foto profil maksimal 5 MB.');
@@ -1068,16 +1110,12 @@ export async function downloadMedia(bucket: string, path: string) {
   return data;
 }
 
-// ---------- AUTO-CLEAN 24 JAM ----------
-// Cek di database: kalau sudah lewat 24 jam, semua data chat/history dihapus
-// otomatis (sisanya hanya data login). return true = data baru saja dibersihkan.
 export async function rpcMaybeCleanup(): Promise<boolean> {
   const { data, error } = await nxRpc('maybe_cleanup', {});
   if (error) throw new Error(normalizeErr(error.message));
   return !!data;
 }
 
-// Hapus seluruh media di bucket chat-media (dipanggil setelah maybe_cleanup true).
 export async function wipeMediaBucket() {
   try {
     const { data: list, error } = await supabase.storage.from('chat-media').list('', { limit: 1000 });
@@ -1086,7 +1124,6 @@ export async function wipeMediaBucket() {
       await supabase.storage.from('chat-media').remove(list.map((f) => f.name));
     }
   } catch {
-    /* noop */
   }
 }
 
@@ -1097,7 +1134,6 @@ export function normalizeErr(msg: string) {
       clearSession();
       window.dispatchEvent(new Event('nexus:logout'));
     } catch {
-      /* noop */
     }
   }
   const m = msg.replace(/^.*?\b(error|exception)\b[:\s]*/i, '');

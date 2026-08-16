@@ -1,58 +1,86 @@
-import { useEffect, useState } from 'react';
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
+import { useEffect, useRef } from 'react';
 
 const KEY = 'nexus:antix';
+const HOLD_MS = 1800;
 
 export function antiSadapEnabled(): boolean {
   try {
-    return localStorage.getItem(KEY) === '1';
+    const v = localStorage.getItem(KEY);
+    return v !== '0';
   } catch {
-    return false;
+    return true;
   }
 }
 
 export function setAntiSadap(on: boolean) {
   try {
-    if (on) localStorage.setItem(KEY, '1');
-    else localStorage.removeItem(KEY);
+    if (on) localStorage.removeItem(KEY);
+    else localStorage.setItem(KEY, '0');
   } catch {
-    /* noop */
   }
 }
 
-// Layar jadi hitam total saat app di-background / kehilangan fokus — seperti
-// mode anti-sadap di app bank & Netflix. Isi chat tidak bisa terbaca orang
-// yang mengintip lewat app switcher / saat kamu pindah aplikasi.
 export default function AntiSadapOverlay() {
-  const [shown, setShown] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!antiSadapEnabled()) return;
-    const onHide = () => setShown(true);
-    const onShow = () => window.setTimeout(() => setShown(false), 150);
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden) onHide();
-      else onShow();
-    });
-    window.addEventListener('blur', onHide);
-    window.addEventListener('focus', onShow);
-    window.addEventListener('pagehide', onHide);
-    window.addEventListener('pageshow', onShow);
+    let hideTimer: number | undefined;
+    const black = () => {
+      if (hideTimer !== undefined) window.clearTimeout(hideTimer);
+      hideTimer = undefined;
+      if (ref.current) ref.current.style.display = 'block';
+    };
+    const unblack = () => {
+      if (hideTimer !== undefined) window.clearTimeout(hideTimer);
+      hideTimer = window.setTimeout(() => {
+        hideTimer = undefined;
+        if (ref.current) ref.current.style.display = 'none';
+      }, HOLD_MS);
+    };
+    const onVis = () => {
+      if (document.hidden) black();
+      else unblack();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('blur', black);
+    window.addEventListener('focus', unblack);
+    window.addEventListener('pagehide', black);
+    window.addEventListener('pageshow', unblack);
+    document.addEventListener('webkithidden', black);
+    document.addEventListener('webkitvisibilitychange', onVis);
     return () => {
-      document.removeEventListener('visibilitychange', onHide);
-      window.removeEventListener('blur', onHide);
-      window.removeEventListener('focus', onShow);
-      window.removeEventListener('pagehide', onHide);
-      window.removeEventListener('pageshow', onShow);
+      if (hideTimer !== undefined) window.clearTimeout(hideTimer);
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('blur', black);
+      window.removeEventListener('focus', unblack);
+      window.removeEventListener('pagehide', black);
+      window.removeEventListener('pageshow', unblack);
+      document.removeEventListener('webkithidden', black);
+      document.removeEventListener('webkitvisibilitychange', onVis);
     };
   }, []);
 
-  if (!shown) return null;
-
   return (
     <div
-      className="fixed inset-0 z-[1000000]"
-      style={{ background: '#000', pointerEvents: 'none', userSelect: 'none' }}
+      ref={ref}
+      className="fixed inset-0 z-[1000000] flex items-center justify-center"
+      style={{ display: 'none', background: '#000', pointerEvents: 'none', userSelect: 'none' }}
       aria-hidden
-    />
+    >
+      <span
+        className="font-mono text-sm text-white/80 tracking-widest"
+        style={{ textShadow: '0 0 12px rgba(0,0,0,0.9)' }}
+      >
+        TANGKAP LAYAR / REKAM TIDAK DIIZINKAN
+      </span>
+    </div>
   );
 }

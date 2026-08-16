@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import type { Msg, User } from '../types';
 
 const SESSION_KEY = 'nexus:user';
@@ -13,7 +20,6 @@ export function saveToken(token: string) {
   try {
     localStorage.setItem(TOKEN_KEY, token);
   } catch {
-    /* noop */
   }
 }
 
@@ -29,7 +35,6 @@ export function clearToken() {
   try {
     localStorage.removeItem(TOKEN_KEY);
   } catch {
-    /* noop */
   }
 }
 
@@ -39,7 +44,6 @@ export function saveSession(user: User) {
     if (!localStorage.getItem(START_KEY)) localStorage.setItem(START_KEY, String(Date.now()));
     localStorage.setItem(ACTIVE_KEY, String(Date.now()));
   } catch {
-    /* storage penuh */
   }
 }
 
@@ -72,7 +76,6 @@ export function touchSession() {
   try {
     if (localStorage.getItem(SESSION_KEY)) localStorage.setItem(ACTIVE_KEY, String(Date.now()));
   } catch {
-    /* noop */
   }
 }
 
@@ -83,7 +86,6 @@ export function clearSession() {
     localStorage.removeItem(ACTIVE_KEY);
     localStorage.removeItem(TOKEN_KEY);
   } catch {
-    /* noop */
   }
 }
 
@@ -101,7 +103,6 @@ export function attachIdleWatcher(onLogout: () => void): () => void {
         onLogout();
       }
     } catch {
-      /* noop */
     }
   }, 60 * 1000);
   return () => {
@@ -129,18 +130,14 @@ export function writeMsgCache(key: string, msgs: Msg[]) {
   try {
     localStorage.setItem(`nexus:cache:msgs:${key}`, JSON.stringify({ t: Date.now(), msgs }));
   } catch {
-    /* storage penuh */
   }
 }
 
-// Hapus SEMUA cache chat di browser (dipakai auto-clean 24 jam). Data login
-// (nexus:user, nexus:token, fingerprint, dll) tetap disimpan.
 export function clearChatCache() {
   try {
     Object.keys(localStorage).forEach((k) => {
       if (k.startsWith('nexus:cache')) localStorage.removeItem(k);
     });
   } catch {
-    /* noop */
   }
 }

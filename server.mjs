@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,13 +26,11 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 const app = express();
 app.disable('x-powered-by');
 
-// Header keamanan global (web): anti-embed, anti-MIME-sniff, anti-referer-leak,
-// dan isolasi dari tab lain. Cache halaman HTML dimatikan supaya isi lama tidak
-// tersimpan publik di browser; asset ber-hash boleh tetap di-cache.
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
   res.setHeader(
@@ -87,7 +92,6 @@ function safeRel(rel) {
   return abs;
 }
 
-// Limiter per-IP untuk semua rute non-asset (anti-scrape / DDoS dasar).
 const genRate = new Map();
 function genRateLimited(ip, maxPerWindow, windowMs) {
   const now = Date.now();
@@ -103,7 +107,6 @@ function genRateLimited(ip, maxPerWindow, windowMs) {
   return e.n > maxPerWindow;
 }
 
-// Proteksi rute API + media: tolak kalau melebihi kuota per 10 detik.
 app.use('/api', (req, res, next) => {
   if (genRateLimited(clientIp(req), 120, 10_000)) {
     return res.status(429).json({ error: 'Terlalu banyak permintaan — tunggu sebentar.' });
@@ -123,7 +126,6 @@ app.post('/api/upload', async (req, res) => {
   if (rateLimited(clientIp(req))) return res.status(429).json({ error: 'Terlalu banyak upload — tunggu sebentar.' });
 
   const len = Number(req.headers['content-length'] || 0);
-  // Browser streaming body tidak mengirim Content-Length (chunked), jadi len bisa 0.
   if (len > MAX_BIG_BYTES) return res.status(413).json({ error: `File melebihi batas ${Math.round(MAX_BIG_BYTES / 1024 / 1024)} MB.` });
 
   const ext = String(req.headers['x-file-ext'] || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toLowerCase();
@@ -137,8 +139,6 @@ app.post('/api/upload', async (req, res) => {
   let done = false;
   const ws = createWriteStream(filePath);
   ws.on('error', () => { failed = true; finish(); });
-  // Anti-hang: kalau tidak ada data 120 detik (koneksi mati/macet), putuskan
-  // request supaya client dapat error dan tidak "numpuk" selamanya.
   let idle = setTimeout(() => { failed = true; req.destroy(); }, 120000);
   req.on('data', (c) => {
     idle.refresh();
@@ -170,7 +170,7 @@ app.post('/api/upload', async (req, res) => {
     const msg = over
       ? `File melebihi batas ${Math.round(MAX_BIG_BYTES / 1024 / 1024)} MB.`
       : 'Upload terputus.';
-    try { res.status(status).json({ error: msg }); } catch { /* socket sudah mati */ }
+    try { res.status(status).json({ error: msg }); } catch { }
     return;
   }
 
@@ -178,8 +178,6 @@ app.post('/api/upload', async (req, res) => {
 });
 
 app.get('/media/*splat', async (req, res) => {
-  // Media butuh sesi valid (anti-scrape). Cache dimatikan supaya file tidak
-  // tersimpan di CDN/browser orang yang belum login.
   const uid = await authUser(req);
   if (!uid) return res.status(401).json({ error: 'Sesi tidak valid.' });
   const rel = Array.isArray(req.params.splat) ? req.params.splat.join('/') : req.params.splat;

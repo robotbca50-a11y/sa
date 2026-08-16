@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -10,9 +17,9 @@
   --sar: env(safe-area-inset-right);
 }
 
-/* Tinggi app: fallback 100vh dulu, lalu dvh bila didukung (webview lama tidak
-   kenal dvh → tanpa fallback tinggi jadi auto → muncul scrollbar → 100vw jadi
-   lebih lebar dari area tampil dan sisi kanan chat terpotong). */
+
+
+
 .app-height {
   height: 100vh;
 }
@@ -45,7 +52,7 @@ body,
 #root {
   height: 100%;
   height: 100vh;
-  height: 100dvh; /* fallback: browser tanpa dvh memakai 100vh */
+  height: 100dvh; 
 }
 
 html,
@@ -69,7 +76,7 @@ body {
   overflow-x: hidden;
 }
 
-/* Safe-area helpers (notch iPhone / gesture bar) */
+
 .pt-safe {
   padding-top: env(safe-area-inset-top);
 }
@@ -172,8 +179,8 @@ button {
   font-family: inherit;
 }
 
-/* Cegah auto-zoom iOS saat fokus ke kotak teks kecil (font <16px bikin Safari
-   memperbesar halaman sehingga tampilan kepotong kiri/kanan). */
+
+
 input,
 textarea,
 select {
@@ -239,7 +246,7 @@ textarea:focus {
 }
 
 
-/* Mode anti-sadap: isi chat tidak bisa diseleksi/disalin (web). */
+
 .anti-sadap-copy {
   -webkit-user-select: none;
   -moz-user-select: none;

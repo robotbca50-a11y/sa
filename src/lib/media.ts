@@ -1,22 +1,48 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 
-// Kompresi lokal (sebelum enkripsi/upload) supaya kirim media secepat WhatsApp:
-// video di-re-encode ke 720p (H.264 + AAC), foto di-resize ke maks 1920px JPEG.
-// ffmpeg.wasm dimuat sekali dari CDN; semua tetap E2E (kompresi di perangkat).
 
 const CORE_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
+const FF_LOAD_TIMEOUT_MS = 60_000;
+const FF_RUN_TIMEOUT_MS = 300_000;
 
 let ffPromise: Promise<FFmpeg> | null = null;
+
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = window.setTimeout(() => reject(new Error(`Timeout: ${what}`)), ms);
+    p.then(
+      (v) => {
+        window.clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        window.clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
 
 function getFFmpeg(): Promise<FFmpeg> {
   if (!ffPromise) {
     ffPromise = (async () => {
       const ff = new FFmpeg();
-      await ff.load({
-        coreURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, 'application/wasm'),
-      });
+      await withTimeout(
+        ff.load({
+          coreURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, 'text/javascript'),
+          wasmURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, 'application/wasm'),
+        }),
+        FF_LOAD_TIMEOUT_MS,
+        'memuat ffmpeg (koneksi lambat?)',
+      );
       return ff;
     })();
     ffPromise.catch(() => {
@@ -26,7 +52,6 @@ function getFFmpeg(): Promise<FFmpeg> {
   return ffPromise;
 }
 
-// ffmpeg.wasm memakai satu filesystem virtual — serialkan eksekusinya.
 let chain: Promise<unknown> = Promise.resolve();
 function serial<T>(fn: () => Promise<T>): Promise<T> {
   const p = chain.then(fn, fn);
@@ -77,19 +102,23 @@ export async function compressVideo(file: Blob, onProgress?: (pct: number) => vo
     });
     try {
       await ff.writeFile('in.mp4', await fetchFile(file));
-      await ff.exec([
-        '-i', 'in.mp4',
-        '-vf', "scale='min(1280,iw)':-2",
-        '-c:v', 'libx264',
-        '-preset', 'veryfast',
-        '-crf', '28',
-        '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac',
-        '-b:a', '96k',
-        '-ac', '2',
-        '-movflags', '+faststart',
-        'out.mp4',
-      ]);
+      await withTimeout(
+        ff.exec([
+          '-i', 'in.mp4',
+          '-vf', "scale='min(1280,iw)':-2",
+          '-c:v', 'libx264',
+          '-preset', 'veryfast',
+          '-crf', '28',
+          '-pix_fmt', 'yuv420p',
+          '-c:a', 'aac',
+          '-b:a', '96k',
+          '-ac', '2',
+          '-movflags', '+faststart',
+          'out.mp4',
+        ]),
+        FF_RUN_TIMEOUT_MS,
+        'kompres video (file terlalu besar?)',
+      );
       const raw = await ff.readFile('out.mp4');
       const arr = raw instanceof Uint8Array ? raw : new Uint8Array(new TextEncoder().encode(String(raw)));
       await ff.deleteFile('in.mp4').catch(() => {});
@@ -103,15 +132,13 @@ export async function compressVideo(file: Blob, onProgress?: (pct: number) => vo
   });
 }
 
-// Siapkan file sebelum dikirim: kompres kalau menguntungkan, kalau gagal atau
-// sudah kecil → kirim mentah. GIF & voice dibiarkan apa adanya.
 export async function prepareMedia(
   file: Blob,
   msgType: string,
   onProgress?: (pct: number) => void,
 ): Promise<Blob> {
   if (msgType === 'video') {
-    if (file.size < 8 * 1024 * 1024) return file;
+    if (file.size < 30 * 1024 * 1024) return file;
     try {
       const out = await compressVideo(file, onProgress);
       return out.size < file.size ? out : file;

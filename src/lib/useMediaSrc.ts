@@ -1,10 +1,14 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { useEffect, useState } from 'react';
 import { downloadMedia } from './api';
 import { supabase } from './supabase';
 
-// URL untuk menampilkan media. Media besar di host Railway butuh token sesi
-// (header), jadi tidak bisa langsung dipakai di <img>/<video> — diunduh lalu
-// jadi object URL. Media di bucket Supabase (public, path UUID) langsung.
 export function useMediaSrc(bucket: string, path: string | null | undefined) {
   const [src, setSrc] = useState<string | undefined>(undefined);
 

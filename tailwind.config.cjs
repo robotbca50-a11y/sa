@@ -1,4 +1,10 @@
-/** @type {import('tailwindcss').Config} */
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 module.exports = {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {

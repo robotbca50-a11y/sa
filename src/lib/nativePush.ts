@@ -1,18 +1,15 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { Capacitor } from '@capacitor/core';
 import { nxRpc } from './api';
 import { loadToken } from './session';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase';
 
-// Lapisan notifikasi NATIVE (APK). Di web semua ini tidak dipakai:
-// browser pakai Web Push via sw.js. Di APK (Capacitor) Web Push tidak
-// tersedia — penggantinya Firebase Cloud Messaging (FCM) via plugin
-// @capacitor/push-notifications. Token FCM disimpan di tabel
-// `device_tokens` dan edge function `send-push` mengirim ke perangkat native.
-//
-// SYARAT build APK dengan notif:
-//   1. taruh google-services.json dari Firebase console di android/app/
-//   2. jalankan  npx cap sync android
-// Tanpa itu app tetap build & jalan, tapi notif native tidak terkirim.
 
 export function isNativeApp() {
   try {
@@ -26,7 +23,6 @@ let lastToken: string | null = null;
 let registered = false;
 let registrationError: string | null = null;
 
-// Status push native untuk tampilan/debug (tombol UJI NOTIF di APK).
 export function nativePushStatus() {
   return { isNative: isNativeApp(), registered, token: lastToken, error: registrationError };
 }
@@ -45,7 +41,6 @@ export async function requestNativeNotifPermission(): Promise<boolean> {
   }
 }
 
-// Daftarkan token FCM perangkat ke DB (caller = pemilik token).
 async function saveNativeToken(token: string, platform: string): Promise<boolean> {
   try {
     const { error } = await nxRpc('save_device_token', { p_token: token, p_platform: platform });
@@ -59,15 +54,11 @@ export async function removeNativeToken(token: string) {
   try {
     await nxRpc('delete_device_token', { p_token: token });
   } catch {
-    /* noop */
   }
 }
 
 type NativePushMsg = { title: string; body: string; convId?: string };
 
-// Pasang listener FCM + daftarkan token perangkat. `onForeground` dipanggil
-// saat app DI FRONT (penerimaan via pushNotificationReceived), `onAction`
-// dipanggil saat user mengetuk notif / tombol balas.
 export async function initNativePush(
   onForeground: (m: NativePushMsg) => void,
   onAction: (m: NativePushMsg) => void,
@@ -113,11 +104,9 @@ export async function initNativePush(
       await PushNotifications.register();
     }
   } catch {
-    /* noop */
   }
 }
 
-// Saat logout: berhenti menerima push native + hapus token dari DB.
 export async function unregisterNativePush(): Promise<void> {
   if (!isNativeApp()) return;
   try {
@@ -125,12 +114,9 @@ export async function unregisterNativePush(): Promise<void> {
     const { PushNotifications } = await import('@capacitor/push-notifications');
     await PushNotifications.unregister();
   } catch {
-    /* noop */
   }
 }
 
-// Uji notif native ke perangkat SENDIRI (tombol "UJI NOTIF" di APK). Pastikan
-// izin + token FCM terdaftar, lalu kirim push tes via edge function `send-push`.
 export async function testNativePushSelf(
   uid: string,
 ): Promise<{ ok: boolean; sent: number; results: any[]; err?: string }> {

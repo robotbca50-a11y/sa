@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Smartphone, X, Download, Bell, Share, Settings, ChevronDown, ChevronUp } from 'lucide-react';
@@ -11,12 +18,6 @@ import {
   dismissInstall,
 } from '../lib/install';
 
-// Banner "Pasang NEXUS di layar utama" — muncul otomatis SETELAH login (sekali
-// saja), selalu di ATAS layar. Tombol PASANG SEKARANG selalu tersedia:
-//   - Android Chrome/desktop: tombol memanggil dialog install resmi browser.
-//   - iOS / Android non-Chrome / kalau browser memblokir prompt: tombol membuka
-//     panduan langkah demi langkah (Share → Add to Home Screen / menu browser).
-// Konten bisa di-scroll (max-h) jadi tidak pernah kepotong di layar kecil.
 export default function InstallBanner() {
   const [show, setShow] = useState(false);
   const [installing, setInstalling] = useState(false);
@@ -30,7 +31,6 @@ export default function InstallBanner() {
   }, []);
 
   useEffect(() => {
-    // Tombol "PASANG" di header bisa memunculkan banner lagi kapan saja.
     const onShow = () => setShow(true);
     window.addEventListener('nexus:show-install', onShow);
     return () => window.removeEventListener('nexus:show-install', onShow);
@@ -48,14 +48,14 @@ export default function InstallBanner() {
   const prompt = getInstallPrompt();
   const ios = isIOS();
   const android = isAndroid();
-  const canAutoInstall = !!prompt; // Android Chrome / desktop Chrome-Edge
+  const canAutoInstall = !!prompt;
 
   async function doInstall() {
     setInstalling(true);
     const ok = await promptInstall();
     setInstalling(false);
     if (ok) setShow(false);
-    else setGuide(true); // prompt diblokir/declined → tampilkan panduan manual
+    else setGuide(true);
   }
 
   return (

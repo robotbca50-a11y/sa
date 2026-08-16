@@ -1,23 +1,10 @@
-// NEXUS — Edge Function untuk push notification beneran (Web Push).
-// Deploy: supabase functions deploy send-push
-// WAJIB set secrets dulu (kalau belum):
-//   supabase secrets set VAPID_SUBJECT=mailto:admin@nexus.app
-//   supabase secrets set VAPID_PUBLIC_KEY=<base64 public>
-//   supabase secrets set VAPID_PRIVATE_KEY=<base64 private>
-//   supabase secrets set FCM_SERVICE_ACCOUNT=<JSON service account Firebase>
-// Public key harus SAMA dengan yang dipakai client (src/lib/notify.ts).
-// Tanpa VAPID_PRIVATE_KEY edge function menolak kirim (tidak ada fallback),
-// supaya kunci private tidak pernah bocor ke repo.
-// FCM_SERVICE_ACCOUNT (opsional): kalau di-set, pesan juga dikirim ke
-// perangkat NATIVE (APK) via Firebase Cloud Messaging HTTP v1.
-// Dipanggil client: POST { user_ids: string[], title, body, url }
-//   header wajib: x-nexus-token = token login si pengirim
-//
-// CATATAN: panggilan DB memakai fetch polos (bukan supabase-js) karena
-// postgrest-js versi tertentu TIDAK meneruskan header custom di opsi .rpc(),
-// jadi header x-nexus-token tidak pernah sampai ke fungsi DB. Dengan fetch
-// polos header dijamin ikut terkirim (persis pola nxRpc di client).
-/// <reference path="./deno.d.ts" />
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 
 import webpush from 'npm:web-push@3.6.7';
 
@@ -28,9 +15,6 @@ const SUBJECT = Deno.env.get('VAPID_SUBJECT') ?? 'mailto:admin@nexus.app';
 const PUBLIC_KEY = Deno.env.get('VAPID_PUBLIC_KEY') ?? '';
 const PRIVATE_KEY = Deno.env.get('VAPID_PRIVATE_KEY') ?? '';
 
-// Service account FCM (JSON dari Firebase console). Kalau ada, edge function
-// juga mengirim ke perangkat NATIVE (APK) via FCM HTTP v1. Tanpa ini hanya
-// web push (browser/PWA) yang jalan.
 const FCM_SERVICE_ACCOUNT = Deno.env.get('FCM_SERVICE_ACCOUNT') ?? '';
 
 const MAX_TARGETS = 50;
@@ -39,9 +23,6 @@ if (PUBLIC_KEY && PRIVATE_KEY) {
   webpush.setVapidDetails(SUBJECT, PUBLIC_KEY, PRIVATE_KEY);
 }
 
-// FCM v1 butuh OAuth2 access token yang dibuat dari service account (JWT
-// RS256 ditandatangani dengan kunci privat service account). Token berlaku 1
-// jam, di-cache di sini.
 let fcmAccessToken: { value: string; expiresAt: number } | null = null;
 
 function parseServiceAccount(raw: string) {
@@ -141,9 +122,6 @@ async function sendFcm(token: string, title: string, body: string, data: Record<
   }
 }
 
-// Browser butuh CORS: fetch dari domain web ke edge function memicu preflight
-// OPTIONS (custom header x-nexus-token + application/json). Tanpa header ini
-// browser menolak request = "TypeError: Failed to fetch".
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -194,7 +172,6 @@ Deno.serve(async (req) => {
     return new Response('ok', { headers: CORS });
   }
   try {
-    // Wajib login: edge function dipanggil client dengan x-nexus-token.
     const token = req.headers.get('x-nexus-token') ?? '';
     if (!token) return fail('Unauthorized', 401);
 
@@ -207,9 +184,6 @@ Deno.serve(async (req) => {
 
     const body = await req.json();
 
-    // Keep-warm: panggilan ringan dari app (mount + tiap 5 menit) supaya
-    // function tidak cold-start saat pesan asli dikirim — cold start inilah
-    // yang bikin notif telat beberapa detik.
     if (body?.warm === true) return json({ ok: true, warm: true });
 
     const selfTest = body?.self_test === true;
@@ -220,16 +194,12 @@ Deno.serve(async (req) => {
         : [];
     if (!user_ids.length) return fail('Butuh user_id / user_ids.');
 
-    // Mode uji diri sendiri (tombol "UJI NOTIF"): kirim ke akun sendiri,
-    // SKIP filter target. Hanya boleh ke uid sendiri — user lain tetap difilter.
     let targets_ids: string[];
     if (selfTest) {
       const onlySelf = user_ids.filter((id) => id === uid).slice(0, 1);
       if (!onlySelf.length) return fail('self_test hanya bisa ke akun sendiri.', 400);
       targets_ids = onlySelf;
     } else {
-      // Hanya kirim ke user yang benar-benar berhubungan dengan pengirim
-      // (satu DM / satu grup). User asing tidak bisa di-push.
       const { data: allowed, error: filterErr } = await rpc<Array<{ user_id: string }>>(
         'filter_notify_targets',
         { p_from: uid, p_ids: user_ids },
@@ -242,10 +212,6 @@ Deno.serve(async (req) => {
       if (!targets_ids.length) return fail('Tidak ada penerima yang valid.', 400);
     }
 
-    // Akses via RPC security-definer, bukan query langsung — tabel di-lock RLS.
-    // Saat self-test, target = diri sendiri, jadi pakai RPC "milik saya" karena
-    // get_push_subscriptions_for_users sengaja MEMBUANG target diri sendiri
-    // (x.id <> v_uid) demi anti-panen.
     const { data: rows, error: subErr } = selfTest
       ? await rpc<Array<{ subscription: { endpoint: string; keys?: { p256dh?: string; auth?: string } | null } }>>(
           'get_my_push_subscriptions',
@@ -264,7 +230,6 @@ Deno.serve(async (req) => {
       if (row?.subscription?.endpoint) targets.push(row.subscription);
     }
 
-    // Perangkat NATIVE (APK/iOS): token FCM. Jalan kalau FCM_SERVICE_ACCOUNT di-set.
     const devRows: Array<{ token: string; platform: string }> = [];
     if (parseServiceAccount(FCM_SERVICE_ACCOUNT)) {
       const { data: dev, error: devErr } = selfTest
@@ -289,8 +254,6 @@ Deno.serve(async (req) => {
       } catch (e) {
         const err = e as { statusCode?: number; message?: string };
         const msg = String(err?.message ?? e);
-        // Subscription sudah mati (FCM 404/410) — hapus dari DB biar tidak
-        // menumpuk dan tidak bikin send berikutnya selalu melaporkan gagal.
         if (err?.statusCode === 404 || err?.statusCode === 410 || /not found|gone/i.test(msg)) {
           await rpc('cleanup_push_subscription', { p_endpoint: sub.endpoint }, token).catch(() => {});
         }

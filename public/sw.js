@@ -1,4 +1,10 @@
-/* NEXUS service worker — push notifications + PWA installable */
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 self.addEventListener('install', (e) => {
   self.skipWaiting();
 });
@@ -7,9 +13,6 @@ self.addEventListener('activate', (e) => {
   e.waitUntil(clients.claim());
 });
 
-// Hanya tangani navigasi (halaman). Request API/asset dibiarkan lewat langsung
-// ke network supaya error asli (rate limit, dsb.) tetap terlihat oleh app dan
-// ditangani nxRpc — bukan disamarkan jadi 503 "Offline".
 self.addEventListener('fetch', (event) => {
   if (event.request.mode === 'navigate') {
     event.respondWith(
@@ -34,8 +37,6 @@ self.addEventListener('push', (event) => {
     body: data.body,
     icon: '/nexus.svg',
     badge: '/nexus.svg',
-    // Satu tag untuk semua: notif baru MENGGANTI notif lama yang masih tampil,
-    // jadi tidak menumpuk banyak notif di layar.
     tag: 'nexus',
     renotify: true,
     requireInteraction: false,

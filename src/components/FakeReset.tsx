@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 import { useEffect, useState } from 'react';
 
 const TERMINAL_LINES: string[] = [
@@ -131,7 +138,6 @@ const SCREENS = [TerminalScreen, BsodScreen, RebootScreen];
 
 export default function FakeReset() {
   const [phase, setPhase] = useState(0);
-  // Setelah urutan "boot" selesai, diam di layar hitam polos (tanpa ulang).
   if (phase >= SCREENS.length) {
     return <div className="h-full w-full bg-black" />;
   }

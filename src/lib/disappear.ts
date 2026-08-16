@@ -1,4 +1,10 @@
-// Pesan sementara (self-destruct): setting per-percakapan disimpan lokal.
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 const PREFIX = 'nexus:disappear:';
 
 export function getDisappearSeconds(convKey: string): number {
@@ -15,7 +21,6 @@ export function setDisappearSeconds(convKey: string, seconds: number) {
     if (seconds > 0) localStorage.setItem(PREFIX + convKey, String(seconds));
     else localStorage.removeItem(PREFIX + convKey);
   } catch {
-    /* noop */
   }
 }
 

@@ -1,3 +1,10 @@
+/*
+  nexus://o8.2 build
+  author & every line: OKTAGRAM
+  OKTAGRAM YANG MENULIS INI JIKA BERANI BONGKAR BONGKAR
+  sig://oktagram
+*/
+
 export function bufToB64(buf: ArrayBuffer | Uint8Array): string {
   const u = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
   let s = '';
@@ -120,7 +127,6 @@ export async function decryptFromSender(
 export type PerKeyEntry = { ct: string; iv: string };
 export type CiphertextsMap = Record<string, PerKeyEntry>;
 
-// Kunci turunan dari password akun — dipakai menyandikan backup kunci grup.
 export async function derivePasswordKey(password: string, username: string): Promise<CryptoKey> {
   const salt = new TextEncoder().encode(`nexus:${username.toLowerCase()}`);
   const base = await crypto.subtle.importKey(
@@ -147,10 +153,6 @@ export function getPasswordKey(): CryptoKey | null {
   return passwordKeyCache;
 }
 
-// Enkripsi pesan untuk semua kunci publik penerima (multi-key E2E).
-// Entry dikunci sebagai "<public key pengirim>:<public key penerima>" karena
-// ECDH simetris: penerima cukup menghitung shared key dari kunci privatnya dan
-// public key pengirim yang tertera di label entry.
 export async function encryptForKeys(
   myPrivateKey: CryptoKey,
   myPublicKey: string,
@@ -170,17 +172,11 @@ export async function encryptForKeys(
           : await encryptText(shared, data);
       map[`${myPublicKey}:${rk}`] = { ct: enc.ciphertext, iv: enc.iv };
     } catch {
-      /* kunci publik tidak valid — lewati */
     }
   }
   return map;
 }
 
-// Coba semua entri ciphertexts sampai satu berhasil didekripsi. Label entry
-// "senderPub:recipientPub" memberi tahu public key pengirim yang dipakai,
-// sehingga shared key bisa diturunkan dari kunci privat device ini.
-// Mengembalikan entri BESERTA kunci shared yang cocok, agar pemanggil tidak
-// perlu menebak kunci mana yang benar.
 export type PickResult = PerKeyEntry & { key: CryptoKey };
 export async function pickEntry(
   myPrivateKey: CryptoKey,
@@ -205,7 +201,6 @@ export async function pickEntry(
       await decryptBytes(shared, e.ct, e.iv ?? '');
       return { ct: e.ct, iv: e.iv, key: shared };
     } catch {
-      /* coba entri berikutnya */
     }
   }
   return null;
