@@ -29,6 +29,8 @@ import { initNativePush, unregisterNativePush, testNativePushSelf, isNativeApp }
 import { decodeMessage, evictCache, clearCache, setDecryptPrivateKey } from '../../lib/decrypt';
 import { clearSession, readMsgCache, writeMsgCache, clearChatCache, saveSession } from '../../lib/session';
 import { prepareMedia } from '../../lib/media';
+import { getDisappearSeconds, cycleDisappear } from '../../lib/disappear';
+import { isPinned, togglePin } from '../../lib/pins';
 import Conversation from '../chat/Conversation';
 import ConversationList from '../chat/ConversationList';
 import { NewChatModal, NewGroupModal, AddMemberModal, GhostSettingsModal, ProfileModal } from '../chat/modals';
@@ -118,6 +120,12 @@ export default function ChatApp() {
   const userKeysRef = useRef<Record<string, string[]>>({});
   const inCallRef = useRef(false);
   const mediaRetryRef = useRef(new Map<string, { file: File; replyTo: string | null }>());
+  // Pesan sementara (self-destruct): msgId → waktu kedaluwarsa + kunci percakapan.
+  const expiryRef = useRef<Record<string, { at: number; key: string }>>({});
+  // Tombstone lokal agar pesan yang sudah kedaluwarsa tidak muncul lagi saat
+  // daftar pesan di-refetch dari server (persisten, dibatasi jumlahnya).
+  const tombRef = useRef<Set<string>>(new Set(JSON.parse(localStorage.getItem('nexus:expired') || '[]')));
+  const [nowTick, setNowTick] = useState(0);
 
   meRef.current = me;
   keyRef.current = privateKey;
@@ -131,6 +139,12 @@ export default function ChatApp() {
   useEffect(() => {
     setDecryptPrivateKey(privateKey ?? null);
   }, [privateKey]);
+
+  // Tick per detik agar daftar pesan re-render saat ada pesan yang kedaluwarsa.
+  useEffect(() => {
+    const iv = setInterval(() => setNowTick((t) => t + 1), 1000);
+    return () => clearInterval(iv);
+  }, []);
 
   // ---------- LOAD ----------
   useEffect(() => {
@@ -174,6 +188,8 @@ export default function ChatApp() {
     const cached = readCache<{ users: User[]; dms: any[] }>(`nexus:cache:${me.id}`);
     if (cached) {
       setUsers(cached.users);
+      const cachedAvatars: Record<string, string | null> = {};
+      for (const u of cached.users ?? []) cachedAvatars[u.id] = u.avatar ?? null;
       setDms(
         (cached.dms ?? []).map((r) => ({
           key: DMK(r.id),
@@ -182,7 +198,7 @@ export default function ChatApp() {
           peerId: r.peer_id,
           name: r.peer_username ?? 'unknown',
           public_key: r.peer_public_key,
-          avatar: r.peer_avatar,
+          avatar: r.peer_avatar ?? cachedAvatars[r.peer_id] ?? null,
           online: false,
           lastAt: r.last_at,
           lastType: r.last_type,
@@ -212,6 +228,8 @@ export default function ChatApp() {
         setUsers(us);
         setGroups(gr);
         writeCache(`nexus:cache:${me.id}`, { users: us, dms: cv }, 5 * 60 * 1000);
+        const avatarById: Record<string, string | null> = {};
+        for (const u of us ?? []) avatarById[u.id] = u.avatar ?? null;
         const items: ConversationItem[] = (cv as any[]).map((r) => ({
           key: DMK(r.id),
           kind: 'dm',
@@ -219,7 +237,7 @@ export default function ChatApp() {
           peerId: r.peer_id,
           name: r.peer_username ?? 'unknown',
           public_key: r.peer_public_key,
-          avatar: r.peer_avatar,
+          avatar: r.peer_avatar ?? avatarById[r.peer_id] ?? null,
           online: false,
           lastAt: r.last_at,
           lastType: r.last_type,
@@ -378,12 +396,14 @@ export default function ChatApp() {
     if (m.sender_id === meRef.current?.id) {
       appendRaw(key, m);
       previewDm(key, m);
+      scheduleExpiry(key, m.id);
       return;
     }
     const isActive = activeRef.current?.key === key;
     if (isActive) {
       appendRaw(key, m);
       previewDm(key, m);
+      scheduleExpiry(key, m.id);
       const st = useStore.getState();
       st.clearUnread(key);
       markRead(key);
@@ -391,6 +411,7 @@ export default function ChatApp() {
       useStore.getState().addUnread(key);
       updateTitle(Object.values(useStore.getState().unread).reduce((a, b) => a + b, 0));
       previewDm(key, m);
+      scheduleExpiry(key, m.id);
       if (!dmsRef.current.some((d) => d.key === key)) refreshDms();
       const peerName = dmsRef.current.find((d) => d.key === key)?.name ?? 'Pesan baru';
       decryptForNotify(key, m, peerName);
@@ -408,16 +429,19 @@ export default function ChatApp() {
     }
     if (m.sender_id === meRef.current?.id) {
       appendRaw(key, m);
+      scheduleExpiry(key, m.id);
       return;
     }
     const isActive = activeRef.current?.key === key;
     if (isActive) {
       appendRaw(key, m);
+      scheduleExpiry(key, m.id);
       useStore.getState().clearUnread(key);
       markRead(key);
     } else {
       useStore.getState().addUnread(key);
       updateTitle(Object.values(useStore.getState().unread).reduce((a, b) => a + b, 0));
+      scheduleExpiry(key, m.id);
       const gName = groupsRef.current.find((g) => GRK(g.id) === key)?.name ?? 'Grup';
       decryptForNotify(key, m, gName);
     }
@@ -468,6 +492,54 @@ export default function ChatApp() {
     writeMsgCache(key, msgMapRef.current[key]);
   }
 
+  // Pesan sementara: pengatur durasi dari header percakapan.
+  function cycleDisappearFor(key: string) {
+    cycleDisappear(key);
+    setNowTick((t) => t + 1);
+  }
+
+  // Pin/unpin percakapan dari daftar chat.
+  function togglePinFor(key: string) {
+    togglePin(key);
+    setNowTick((t) => t + 1);
+  }
+
+  // Pesan sementara: jadwalkan kedaluwarsa (pengirim hapus di server + lokal,
+  // penerima sembunyikan lokal). Dipakai saat kirim sukses & saat terima.
+  function scheduleExpiry(key: string, msgId: string) {
+    const secs = getDisappearSeconds(key);
+    if (!secs) return;
+    expiryRef.current[msgId] = { at: Date.now() + secs * 1000, key };
+    setNowTick((t) => t + 1);
+    window.setTimeout(() => {
+      const list = msgMapRef.current[key] ?? [];
+      const msg = list.find((x) => x.id === msgId);
+      if (msg && msg.sender_id === meRef.current?.id) {
+        // Pengirim: hapus dari server (realtime meng-update penerima) + lokal.
+        try {
+          if (key.startsWith('grp:')) rpcGroupDeleteMessage(msgId, meRef.current!.id).catch(() => {});
+          else rpcDeleteMessage(msgId, meRef.current!.id).catch(() => {});
+        } catch {
+          /* noop */
+        }
+        evictCache(msgId);
+      } else {
+        // Penerima: sembunyikan lokal + catat tombstone agar tidak muncul lagi.
+        tombRef.current.add(msgId);
+        const arr = Array.from(tombRef.current);
+        if (arr.length > 500) arr.splice(0, arr.length - 500);
+        try {
+          localStorage.setItem('nexus:expired', JSON.stringify(arr));
+        } catch {
+          /* noop */
+        }
+      }
+      delete expiryRef.current[msgId];
+      setMsgMap({ ...msgMapRef.current });
+      setNowTick((t) => t + 1);
+    }, secs * 1000);
+  }
+
   async function previewDm(key: string, m: Msg) {
     let text = '';
     if (m.msg_type === 'text' && m.ciphertext) {
@@ -511,6 +583,8 @@ export default function ChatApp() {
   }
 
   function storeMsgs(key: string, rows: Msg[]) {
+    // Saring pesan yang sudah kedaluwarsa (tombstone) supaya tidak muncul lagi.
+    if (tombRef.current.size > 0) rows = rows.filter((m) => !tombRef.current.has(m.id));
     msgMapRef.current = { ...msgMapRef.current, [key]: rows };
     setMsgMap(msgMapRef.current);
     writeMsgCache(key, rows);
@@ -806,6 +880,7 @@ export default function ChatApp() {
         );
       }
       refetchActive();
+      scheduleExpiry(a.key, localId);
       void pushAfterSend(
         a,
         a.kind === 'dm' ? me!.username : (groupsRef.current.find((g) => g.id === a.key.replace('grp:', ''))?.name ?? 'Grup'),
@@ -938,6 +1013,7 @@ export default function ChatApp() {
         iv: plan.iv,
         uploadPct: 100,
       });
+      scheduleExpiry(a.key, localId);
       refetchActive();
     } catch (e) {
       try {
@@ -1161,7 +1237,12 @@ export default function ChatApp() {
     return [...d, ...g];
   }, [dms, groups, onlineSet, unread]);
 
-  const activeMsgs = active ? msgMap[active.key] ?? [] : [];
+  const activeMsgs = (active ? msgMap[active.key] ?? [] : []).filter((m) => {
+    const ex = expiryRef.current[m.id];
+    if (ex && Date.now() > ex.at) return false;
+    if (tombRef.current.has(m.id)) return false;
+    return true;
+  });
   const activeKeyObj = active ? keyMap[active.key] : undefined;
   const activePeer = active?.kind === 'dm' ? dms.find((d) => d.key === active.key) : undefined;
   const groupLocked = active?.kind === 'group' ? !keyMap[active.key] : false;
@@ -1358,6 +1439,8 @@ export default function ChatApp() {
               userNames={userNames}
               userAvatars={userAvatars}
               onBack={() => setActive(null)}
+              disappearSecs={getDisappearSeconds(active.key)}
+              onCycleDisappear={() => cycleDisappearFor(active.key)}
             />
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center text-slate-600">

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Phone, UserPlus, Lock, Info, Users, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Phone, UserPlus, Lock, Info, Users, ChevronDown, Timer } from 'lucide-react';
+import { disappearLabel } from '../../lib/disappear';
 import { motion } from 'framer-motion';
 import MessageBubble from './MessageBubble';
 import ChatInput from './ChatInput';
@@ -9,6 +10,7 @@ import type { Msg, Reaction } from '../../types';
 import { decodeMessage } from '../../lib/decrypt';
 import { rpcGetMessage, rpcGetGroupMessage } from '../../lib/api';
 import { useStore } from '../../lib/store';
+import { antiSadapEnabled } from '../AntiSadapOverlay';
 
 export default function Conversation({
   kind,
@@ -34,6 +36,8 @@ export default function Conversation({
   userNames,
   userAvatars,
   onBack,
+  disappearSecs = 0,
+  onCycleDisappear,
 }: {
   kind: 'dm' | 'group';
   title: string;
@@ -58,6 +62,8 @@ export default function Conversation({
   userNames: Record<string, string>;
   userAvatars?: Record<string, string | null>;
   onBack: () => void;
+  disappearSecs?: number;
+  onCycleDisappear?: () => void;
 }) {
   const me = useStore((s) => s.me);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -182,6 +188,20 @@ export default function Conversation({
             <Phone size={17} />
           </motion.button>
         )}
+        {onCycleDisappear && (
+          <button
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-mono transition ${
+              disappearSecs > 0
+                ? 'border-amber/40 bg-amber/10 text-amber hover:bg-amber/20'
+                : 'border-white/10 text-slate-400 hover:text-white'
+            }`}
+            onClick={onCycleDisappear}
+            title={`Pesan sementara: ${disappearLabel(disappearSecs)}`}
+          >
+            <Timer size={14} />
+            {disappearLabel(disappearSecs)}
+          </button>
+        )}
       </header>
 
       {groupInfo && (
@@ -192,7 +212,12 @@ export default function Conversation({
       )}
 
       {/* messages */}
-      <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto overflow-x-hidden py-3 space-y-1 relative">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        onContextMenu={antiSadapEnabled() ? (e) => e.preventDefault() : undefined}
+        className={`flex-1 overflow-y-auto overflow-x-hidden py-3 space-y-1 relative ${antiSadapEnabled() ? 'anti-sadap-copy' : ''}`}
+      >
         {messages.length === 0 && (
           <div className="h-full flex flex-col items-center justify-center text-slate-600">
             <div className="text-4xl mb-3">🔐</div>

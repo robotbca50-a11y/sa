@@ -237,3 +237,16 @@ textarea:focus {
     opacity: 1;
   }
 }
+
+
+/* Mode anti-sadap: isi chat tidak bisa diseleksi/disalin (web). */
+.anti-sadap-copy {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.anti-sadap-copy img,
+.anti-sadap-copy video {
+  -webkit-user-drag: none;
+}

@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Plus, Search, MessageSquarePlus, Users } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { Plus, Search, MessageSquarePlus, Users, Pin } from 'lucide-react';
 import Avatar, { avatarUrl } from '../Avatar';
+import { isPinned, togglePin } from '../../lib/pins';
 import type { ConversationItem } from '../../types';
 
 function fmtTime(iso?: string) {
@@ -29,7 +29,10 @@ export default function ConversationList({
   ghostOn: boolean;
 }) {
   const [q, setQ] = useState('');
-  const filtered = items.filter((i) => i.name.toLowerCase().includes(q.toLowerCase()));
+  const [, setPinnedVer] = useState(0);
+  const filtered = items
+    .filter((i) => i.name.toLowerCase().includes(q.toLowerCase()))
+    .sort((a, b) => Number(isPinned(b.key)) - Number(isPinned(a.key)));
 
   return (
     <div className="flex flex-col h-full">
@@ -66,43 +69,63 @@ export default function ConversationList({
         )}
         {filtered.map((it) => {
           const isActive = it.key === activeKey;
+          const pinned = isPinned(it.key);
           return (
-            <motion.button
+            <div
               key={it.key}
-              whileTap={{ scale: 0.98 }}
-              onClick={() => onSelect(it)}
-              className={`w-full flex items-center gap-3 px-3 py-3 text-left transition-colors border-l-2 ${
+              className={`group relative border-l-2 ${
                 isActive ? 'bg-neon/10 border-neon' : 'border-transparent hover:bg-white/5'
               }`}
             >
-              <div className="relative">
-                <Avatar id={it.kind === 'dm' ? it.id! : `group:${it.name}`} name={it.name} size={46} online={it.kind === 'dm' ? it.online : undefined} ghostOn={it.kind === 'dm' ? ghostOn : false} src={it.kind === 'dm' ? avatarUrl(it.avatar) : undefined} />
-                {it.kind === 'group' && (
-                  <span className="absolute -bottom-1 -right-1 bg-arc rounded-md p-0.5 border border-abyss">
-                    <Users size={8} className="text-white" />
-                  </span>
-                )}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-white text-sm truncate">{it.name}</span>
-                  <span className="text-[10px] font-mono text-slate-500 shrink-0">{fmtTime(it.lastAt)}</span>
-                </div>
-                <div className="flex items-center justify-between gap-2 mt-0.5">
-                  <span className="text-xs text-slate-500 truncate flex items-center gap-1">
-                    {it.kind === 'group' && <span className="text-arc-lighter" style={{ color: '#a78bfa' }}>#</span>}
-                    {it.lastMsg || (it.kind === 'group' ? 'Grup terenkripsi' : 'Terhubung via ECDH')}
-                  </span>
-                  {it.unread ? (
-                    <span className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-virus text-white text-[10px] font-mono flex items-center justify-center">
-                      {it.unread}
+              {pinned && (
+                <span className="absolute right-2 top-1.5 text-amber/80">
+                  <Pin size={12} className="fill-current" />
+                </span>
+              )}
+              <button
+                className="w-full flex items-center gap-3 px-3 py-3 text-left transition-colors"
+                onClick={() => onSelect(it)}
+              >
+                <div className="relative">
+                  <Avatar id={it.kind === 'dm' ? it.id! : `group:${it.name}`} name={it.name} size={46} online={it.kind === 'dm' ? it.online : undefined} ghostOn={it.kind === 'dm' ? ghostOn : false} src={it.kind === 'dm' ? avatarUrl(it.avatar) : undefined} />
+                  {it.kind === 'group' && (
+                    <span className="absolute -bottom-1 -right-1 bg-arc rounded-md p-0.5 border border-abyss">
+                      <Users size={8} className="text-white" />
                     </span>
-                  ) : it.kind === 'dm' && it.online ? (
-                    <span className="w-2 h-2 rounded-full bg-lime shrink-0 animate-pulse" />
-                  ) : null}
+                  )}
                 </div>
-              </div>
-            </motion.button>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-white text-sm truncate">{it.name}</span>
+                    <span className="text-[10px] font-mono text-slate-500 shrink-0">{fmtTime(it.lastAt)}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 mt-0.5">
+                    <span className="text-xs text-slate-500 truncate flex items-center gap-1">
+                      {it.kind === 'group' && <span className="text-arc-lighter" style={{ color: '#a78bfa' }}>#</span>}
+                      {it.lastMsg || (it.kind === 'group' ? 'Grup terenkripsi' : 'Terhubung via ECDH')}
+                    </span>
+                    {it.unread ? (
+                      <span className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-virus text-white text-[10px] font-mono flex items-center justify-center">
+                        {it.unread}
+                      </span>
+                    ) : it.kind === 'dm' && it.online ? (
+                      <span className="w-2 h-2 rounded-full bg-lime shrink-0 animate-pulse" />
+                    ) : null}
+                  </div>
+                </div>
+              </button>
+              <button
+                className="absolute right-2 bottom-2 text-slate-600 hover:text-amber opacity-0 group-hover:opacity-100 transition-opacity"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  togglePin(it.key);
+                  setPinnedVer((v) => v + 1);
+                }}
+                title={pinned ? 'Lepas pin' : 'Pin'}
+              >
+                <Pin size={13} className={pinned ? 'fill-amber text-amber' : ''} />
+              </button>
+            </div>
           );
         })}
       </div>

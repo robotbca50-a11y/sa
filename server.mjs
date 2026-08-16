@@ -19,6 +19,25 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 const app = express();
 app.disable('x-powered-by');
 
+// Header keamanan global (web): anti-embed, anti-MIME-sniff, anti-referer-leak,
+// dan isolasi dari tab lain. Cache halaman HTML dimatikan supaya isi lama tidak
+// tersimpan publik di browser; asset ber-hash boleh tetap di-cache.
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.setHeader(
+    'Permissions-Policy',
+    'browsing-topics=(), interest-cohort=(), attribution-reporting=(), run-ad-auction=(), join-ad-interest-group=(), shared-storage=()'
+  );
+  if (req.path.endsWith('.html') || req.path === '/' || !path.extname(req.path)) {
+    res.setHeader('Cache-Control', 'no-store');
+  }
+  next();
+});
+
 function clientIp(req) {
   return (req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown');
 }
