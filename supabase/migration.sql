@@ -325,6 +325,7 @@ alter table public.group_messages add column if not exists media_path text;
 alter table public.group_messages add column if not exists reply_to uuid;
 alter table public.group_messages add column if not exists edited_at timestamptz;
 alter table public.group_messages add column if not exists deleted boolean default false;
+alter table public.group_messages add column if not exists ciphertexts jsonb;
 
 alter table public.stories add column if not exists caption text default '';
 alter table public.stories add column if not exists kind text default 'image';
@@ -1221,7 +1222,7 @@ begin
   on conflict (id) do nothing;
 end $$;
 
-create or replace function public.set_media_status(p_id uuid, p_status text, p_path text default null, p_ciphertext text default null, p_iv text default null)
+create or replace function public.set_media_status(p_id uuid, p_status text, p_path text default null, p_ciphertext text default null, p_iv text default null, p_ciphertexts jsonb default null)
 returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -1242,7 +1243,8 @@ begin
     set media_status = p_status,
         media_path = coalesce(p_path, media_path),
         ciphertext = coalesce(p_ciphertext, ciphertext),
-        iv = coalesce(p_iv, iv)
+        iv = coalesce(p_iv, iv),
+        ciphertexts = coalesce(p_ciphertexts, ciphertexts)
     where id = p_id and sender_id = v_uid;
     return;
   end if;
@@ -1256,7 +1258,8 @@ begin
     set media_status = p_status,
         media_path = coalesce(p_path, media_path),
         ciphertext = coalesce(p_ciphertext, ciphertext),
-        iv = coalesce(p_iv, iv)
+        iv = coalesce(p_iv, iv),
+        ciphertexts = coalesce(p_ciphertexts, ciphertexts)
     where id = p_id and sender_id = v_uid;
     return;
   end if;

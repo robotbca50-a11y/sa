@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Phone, PhoneOff, Mic, MicOff, Video, VideoOff } from 'lucide-react';
 import { onCall, sendCall } from '../../lib/realtime';
+import { triggerPush } from '../../lib/notify';
 import { useStore } from '../../lib/store';
 import type { User } from '../../types';
 import Avatar from '../Avatar';
@@ -24,9 +25,12 @@ export default function VideoCall({ mode, peer, onClose }: { mode: 'caller' | 'c
   const remoteRef = useRef<HTMLVideoElement>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const stageRef = useRef(stage);
+  stageRef.current = stage;
 
   useEffect(() => {
     let closed = false;
+    let beat: number | null = null;
     const pc = new RTCPeerConnection(RTC_CONFIG);
     pcRef.current = pc;
 
@@ -75,6 +79,13 @@ export default function VideoCall({ mode, peer, onClose }: { mode: 'caller' | 'c
         if (localRef.current) localRef.current.srcObject = stream;
         if (mode === 'caller') {
           send('call-invite', {});
+          if (me) {
+            triggerPush([peer.id], `${me.username} nelpon kamu`, '📞 Video call masuk', `/#call:${peer.id}`).catch(() => {});
+          }
+          beat = window.setInterval(() => {
+            if (stageRef.current !== 'ringing') return;
+            send('call-invite', {});
+          }, 5000);
         } else {
           send('call-ready', {});
         }
@@ -86,6 +97,7 @@ export default function VideoCall({ mode, peer, onClose }: { mode: 'caller' | 'c
     return () => {
       closed = true;
       unsub();
+      if (beat) window.clearInterval(beat);
       pc.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

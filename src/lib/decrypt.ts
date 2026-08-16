@@ -46,7 +46,7 @@ async function decryptMediaBlob(blob: Blob, key: CryptoKey, msg: Msg, entry: Ent
         for (let i = 0; i < h.n; i++) {
           const ctLen = i === h.n - 1 ? blob.size - off : h.ch + 16;
           const ct = await blob.slice(off, off + ctLen).arrayBuffer();
-          const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64ToBuf(h.ivs[i]) }, key, ct);
+          const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64ToBuf(h.ivs[i]) }, entry?.key ?? key, ct);
           parts.push(pt);
           off += ctLen;
         }

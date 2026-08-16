@@ -464,8 +464,22 @@ export async function rpcSetMediaStatus(
   path?: string | null,
   ct?: string | null,
   iv?: string | null,
+  cts?: unknown,
 ) {
   try {
+    if (cts) {
+      const { error } = await nxRpc('set_media_status', {
+        p_id: id,
+        p_status: status,
+        p_path: path ?? null,
+        p_ciphertext: ct ?? null,
+        p_iv: iv ?? null,
+        p_ciphertexts: cts,
+      });
+      if (!error) return;
+      const msg = error.message ?? String(error);
+      if (!isFuncNotFound(msg) && !/p_ciphertexts|parameter/i.test(msg)) throw new Error(normalizeErr(msg));
+    }
     const { error } = await nxRpc('set_media_status', {
       p_id: id,
       p_status: status,

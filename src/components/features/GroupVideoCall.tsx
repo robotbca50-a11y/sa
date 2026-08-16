@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Phone, PhoneOff, Mic, MicOff, Video, VideoOff } from 'lucide-react';
 import { onGroupCall, sendGroupCall } from '../../lib/realtime';
+import { triggerPush } from '../../lib/notify';
 import type { User } from '../../types';
 import Avatar from '../Avatar';
 
@@ -41,9 +42,12 @@ export default function GroupVideoCall({
   const streamRef = useRef<MediaStream | null>(null);
   const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const remotesRef = useRef<Record<string, MediaStream>>({});
+  const stageRef = useRef(stage);
+  stageRef.current = stage;
 
   useEffect(() => {
     let closed = false;
+    let beat: number | null = null;
     const pcs = pcsRef.current;
     const meId = me.id;
     const known: string[] = members.map((m) => m.id);
@@ -144,6 +148,19 @@ export default function GroupVideoCall({
         if (localRef.current) localRef.current.srcObject = stream;
         if (mode === 'caller') {
           send('start', { members: known, initiator: meId });
+          const others = known.filter((id) => id !== meId);
+          if (others.length) {
+            triggerPush(
+              others,
+              `${me.username} memanggil grup`,
+              `📞 Video call grup: ${groupName}`,
+              `/#gcall:${groupId}`,
+            ).catch(() => {});
+          }
+          beat = window.setInterval(() => {
+            if (stageRef.current !== 'ringing') return;
+            send('start', { members: known, initiator: meId });
+          }, 5000);
         } else {
           send('join', {});
           known.forEach((uid) => connectTo(uid));
@@ -157,6 +174,7 @@ export default function GroupVideoCall({
     return () => {
       closed = true;
       unsub();
+      if (beat) window.clearInterval(beat);
       pcs.forEach((pc) => pc.close());
       pcs.clear();
       streamRef.current?.getTracks().forEach((t) => t.stop());

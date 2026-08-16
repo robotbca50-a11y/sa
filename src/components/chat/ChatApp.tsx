@@ -135,6 +135,8 @@ export default function ChatApp() {
   const keyMapRef = useRef(keyMap);
   const userMapRef = useRef<Record<string, string>>({});
   const userKeysRef = useRef<Record<string, string[]>>({});
+  const lastKeyFetchRef = useRef(0);
+  const incomingFromRef = useRef<string | null>(null);
   const inCallRef = useRef(false);
   const groupCallRef = useRef<typeof groupCall>(null);
   const incomingGroupCallRef = useRef<typeof incomingGroupCall>(null);
@@ -303,6 +305,8 @@ export default function ChatApp() {
         const from = data.from;
         const fromUser = users.find((u) => u.id === from);
         if (fromUser) {
+          if (incomingFromRef.current === from) return;
+          incomingFromRef.current = from;
           setIncoming(fromUser);
           appNotify('Panggilan masuk', `${fromUser.username} nelpon kamu`, {
             icon: '📞',
@@ -311,6 +315,7 @@ export default function ChatApp() {
         }
       }
       if (event === 'call-cancel' && data.to === meRef.current?.id) {
+        incomingFromRef.current = null;
         setIncoming(null);
       }
     });
@@ -322,6 +327,7 @@ export default function ChatApp() {
         if (data.from === meId) return;
         if (call || groupCallRef.current || inCallRef.current) return;
         if (!groupsRef.current.some((g) => g.id === data.groupId)) return;
+        if (incomingGroupCallRef.current?.callId === data.callId) return;
         const g = groupsRef.current.find((x) => x.id === data.groupId);
         const mems: User[] = (data.members ?? []).map((id: string) => {
           const u = users.find((x) => x.id === id);
@@ -350,6 +356,10 @@ export default function ChatApp() {
       }
     };
     const syncIv = setInterval(syncAll, 15_000);
+    const keyIv = setInterval(() => {
+      freshUserKeys();
+      syncAll();
+    }, 300_000);
     const onFocus = () => syncAll();
     window.addEventListener('focus', onFocus);
 
@@ -359,6 +369,7 @@ export default function ChatApp() {
       offCall();
       offGCall();
       clearInterval(syncIv);
+      clearInterval(keyIv);
       clearInterval(warmIv);
       clearInterval(epochIv);
       window.removeEventListener('focus', onFocus);
@@ -878,12 +889,30 @@ export default function ChatApp() {
     return Array.from(set).filter(Boolean);
   }
 
+  async function freshUserKeys() {
+    const now = Date.now();
+    if (now - lastKeyFetchRef.current < 30_000) return;
+    lastKeyFetchRef.current = now;
+    try {
+      const keys = await rpcGetAllUserKeys();
+      const merged: Record<string, string[]> = { ...userKeysRef.current };
+      for (const k of keys ?? []) {
+        const arr = merged[k.user_id] ?? [];
+        if (!arr.includes(k.public_key)) arr.push(k.public_key);
+        merged[k.user_id] = arr;
+      }
+      userKeysRef.current = merged;
+    } catch {
+    }
+  }
+
   async function dmCiphertexts(
     text: string | Uint8Array,
     peerId: string,
     peerPub?: string | null,
   ): Promise<Record<string, { ct: string; iv: string }> | undefined> {
     if (!privateKey) return undefined;
+    await freshUserKeys();
     const myPub = await exportPublicRaw(privateKey).catch(() => '');
     if (!myPub) return undefined;
     const recipients = [
@@ -1156,15 +1185,36 @@ export default function ChatApp() {
       const blob = await prepareMedia(file, type, (pct) => {
         patchLocalMsg(a.key, localId, { uploadPct: pct, uploadPhase: 'compress' });
       });
+      let mediaKey = k;
+      let cts: Record<string, { ct: string; iv: string }> | undefined;
+      if (a.kind === 'dm' && privateKey && me) {
+        try {
+          await freshUserKeys();
+          const mk = await randomAESKey();
+          const raw = await exportAESKey(mk);
+          const myPub = await exportPublicRaw(privateKey).catch(() => '');
+          const peerId = a.key.replace('dm:', '');
+          const item = dmsRef.current.find((d) => d.key === a.key);
+          const recipients = [
+            ...peerKeys(peerId, item?.public_key),
+            ...peerKeys(me.id, me.public_key),
+          ];
+          if (myPub) {
+            cts = await encryptForKeys(privateKey, myPub, recipients, raw).catch(() => undefined);
+            if (cts && Object.keys(cts).length > 0) mediaKey = mk;
+          }
+        } catch {
+        }
+      }
       const plan = planBigMedia(blob);
       patchLocalMsg(a.key, localId, { uploadPct: 0, uploadPhase: 'upload' });
-      const { path } = await uploadBigMedia(blob, k, plan, (sent, total) => {
+      const { path } = await uploadBigMedia(blob, mediaKey, plan, (sent, total) => {
         patchLocalMsg(a.key, localId, {
           uploadPct: total ? Math.round((sent / total) * 100) : 0,
           uploadPhase: 'upload',
         });
       });
-      await rpcRetry(() => rpcSetMediaStatus(localId, 'ready', path, plan.header, plan.iv));
+      await rpcRetry(() => rpcSetMediaStatus(localId, 'ready', path, plan.header, plan.iv, cts ?? null));
       mediaRetryRef.current.delete(localId);
       evictCache(localId);
       patchLocalMsg(a.key, localId, {
@@ -1173,6 +1223,7 @@ export default function ChatApp() {
         media_path: path,
         ciphertext: plan.header,
         iv: plan.iv,
+        ciphertexts: cts ?? null,
         uploadPct: 100,
       });
       scheduleExpiry(a.key, localId);
