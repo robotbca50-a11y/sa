@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../lib/store';
 import { SUPABASE_URL } from '../lib/supabase';
 
@@ -42,6 +42,9 @@ export default function Avatar({
 }) {
   const ghostInterval = useStore((s) => s.ghostInterval);
   const color = hashColor(id);
+  const [imgFailed, setImgFailed] = useState(false);
+
+  useEffect(() => setImgFailed(false), [src]);
 
   const initials = useMemo(() => {
     const clean = ghostHandle(id, name, !!ghostOn, ghostInterval).replace(/[^a-z0-9#]/gi, '');
@@ -71,8 +74,8 @@ export default function Avatar({
           boxShadow: `0 0 14px ${color}44`,
         }}
       >
-        {src ? (
-          <img src={src} alt={name} className="w-full h-full object-cover" />
+        {src && !imgFailed ? (
+          <img src={src} alt={name} className="w-full h-full object-cover" onError={() => setImgFailed(true)} />
         ) : (
           initials
         )}
