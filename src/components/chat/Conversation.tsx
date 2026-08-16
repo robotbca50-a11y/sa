@@ -188,20 +188,6 @@ export default function Conversation({
             <Phone size={17} />
           </motion.button>
         )}
-        {onCycleDisappear && (
-          <button
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-mono transition ${
-              disappearSecs > 0
-                ? 'border-amber/40 bg-amber/10 text-amber hover:bg-amber/20'
-                : 'border-white/10 text-slate-400 hover:text-white'
-            }`}
-            onClick={onCycleDisappear}
-            title={`Pesan sementara: ${disappearLabel(disappearSecs)}`}
-          >
-            <Timer size={14} />
-            {disappearLabel(disappearSecs)}
-          </button>
-        )}
       </header>
 
       {groupInfo && (
@@ -266,6 +252,23 @@ export default function Conversation({
           </button>
         )}
       </div>
+
+      {onCycleDisappear && (
+        <div className="px-2 pt-1 flex justify-end">
+          <button
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-mono transition ${
+              disappearSecs > 0
+                ? 'border-amber/40 bg-amber/10 text-amber hover:bg-amber/20'
+                : 'border-white/10 text-slate-500 hover:text-white'
+            }`}
+            onClick={onCycleDisappear}
+            title={`Pesan sementara: ${disappearLabel(disappearSecs)}`}
+          >
+            <Timer size={12} />
+            {disappearSecs > 0 ? `hilang ${disappearLabel(disappearSecs)}` : 'pesan sementara: off'}
+          </button>
+        </div>
+      )}
 
       <ChatInput
         conversationKey={convKey}
