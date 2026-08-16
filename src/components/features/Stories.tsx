@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Plus, Trash2, Eye } from 'lucide-react';
-import { rpcAddStory, rpcGetStories, rpcGetMyStories, rpcViewStory, rpcStoryViews, rpcDeleteStory, uploadMedia, mediaUrl } from '../../lib/api';
+import { rpcAddStory, rpcGetStories, rpcGetMyStories, rpcViewStory, rpcStoryViews, rpcDeleteStory, uploadMedia } from '../../lib/api';
+import { useMediaSrc } from '../../lib/useMediaSrc';
 import { subscribeStories } from '../../lib/realtime';
 import { useStore } from '../../lib/store';
 import Avatar from '../Avatar';
@@ -129,6 +130,7 @@ function StoryViewer({
   const videoRef = useRef<HTMLVideoElement>(null);
   const story = list[idx];
   const isVideo = story?.kind === 'video';
+  const storySrc = useMediaSrc('chat-media', story?.media_path ?? null);
 
   useEffect(() => {
     setProgress(0);
@@ -216,7 +218,7 @@ function StoryViewer({
           {story && isVideo ? (
             <video
               ref={videoRef}
-              src={mediaUrl('chat-media', story.media_path)}
+              src={storySrc}
               autoPlay
               loop
               playsInline
@@ -228,7 +230,7 @@ function StoryViewer({
               className="max-h-full max-w-full rounded-xl"
             />
           ) : story ? (
-            <img src={mediaUrl('chat-media', story.media_path)} alt="" className="max-h-full max-w-full rounded-xl" />
+            <img src={storySrc} alt="" className="max-h-full max-w-full rounded-xl" />
           ) : null}
         </div>
 

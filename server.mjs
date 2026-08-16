@@ -68,6 +68,36 @@ function safeRel(rel) {
   return abs;
 }
 
+// Limiter per-IP untuk semua rute non-asset (anti-scrape / DDoS dasar).
+const genRate = new Map();
+function genRateLimited(ip, maxPerWindow, windowMs) {
+  const now = Date.now();
+  if (genRate.size > 10_000) {
+    for (const [k, v] of genRate) if (now - v.t > windowMs) genRate.delete(k);
+  }
+  const e = genRate.get(ip);
+  if (!e || now - e.t > windowMs) {
+    genRate.set(ip, { t: now, n: 1 });
+    return false;
+  }
+  e.n += 1;
+  return e.n > maxPerWindow;
+}
+
+// Proteksi rute API + media: tolak kalau melebihi kuota per 10 detik.
+app.use('/api', (req, res, next) => {
+  if (genRateLimited(clientIp(req), 120, 10_000)) {
+    return res.status(429).json({ error: 'Terlalu banyak permintaan — tunggu sebentar.' });
+  }
+  next();
+});
+app.use('/media', (req, res, next) => {
+  if (genRateLimited(clientIp(req), 200, 10_000)) {
+    return res.status(429).json({ error: 'Terlalu banyak permintaan — tunggu sebentar.' });
+  }
+  next();
+});
+
 app.post('/api/upload', async (req, res) => {
   const uid = await authUser(req);
   if (!uid) return res.status(401).json({ error: 'Sesi tidak valid. Login ulang.' });
@@ -128,11 +158,15 @@ app.post('/api/upload', async (req, res) => {
   res.status(201).json({ path: rel, size: got });
 });
 
-app.get('/media/*splat', (req, res) => {
+app.get('/media/*splat', async (req, res) => {
+  // Media butuh sesi valid (anti-scrape). Cache dimatikan supaya file tidak
+  // tersimpan di CDN/browser orang yang belum login.
+  const uid = await authUser(req);
+  if (!uid) return res.status(401).json({ error: 'Sesi tidak valid.' });
   const rel = Array.isArray(req.params.splat) ? req.params.splat.join('/') : req.params.splat;
   const abs = safeRel(rel);
   if (!abs || !fs.existsSync(abs)) return res.status(404).json({ error: 'Not found' });
-  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.setHeader('Cache-Control', 'private, no-store');
   res.sendFile(abs);
 });
 

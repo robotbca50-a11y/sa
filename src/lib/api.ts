@@ -884,11 +884,6 @@ export async function uploadMedia(bucket: string, path: string, blob: Blob, user
   if (error) throw new Error(normalizeErr(error.message));
 }
 
-export function mediaUrl(bucket: string, path: string) {
-  if (path.startsWith('big/')) return `${MEDIA_BASE}/media/${path}`;
-  return supabase.storage.from(bucket).getPublicUrl(path).data.publicUrl;
-}
-
 // ---------- MEDIA BESAR (host Railway, >50MB — di luar batas Supabase Free) ----------
 export const MEDIA_BASE = 'https://sa-production-244d.up.railway.app';
 const MAX_BIG_UPLOAD_BYTES = 1024 * 1024 * 1024;
@@ -1061,7 +1056,10 @@ export async function uploadAvatar(uid: string, blob: Blob) {
 
 export async function downloadMedia(bucket: string, path: string) {
   if (path.startsWith('big/')) {
-    const res = await fetch(`${MEDIA_BASE}/media/${path}`);
+    const token = loadToken();
+    const headers: Record<string, string> = {};
+    if (token) headers['x-nexus-token'] = token;
+    const res = await fetch(`${MEDIA_BASE}/media/${path}`, { headers });
     if (!res.ok) throw new Error(`Download media gagal (${res.status}).`);
     return await res.blob();
   }

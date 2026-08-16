@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Upload, Trash2, Link2, Music, Heart } from 'lucide-react';
-import { rpcAddReel, rpcGetReels, rpcDeleteReel, uploadMedia, mediaUrl } from '../../lib/api';
+import { rpcAddReel, rpcGetReels, rpcDeleteReel, uploadMedia } from '../../lib/api';
+import { useMediaSrc } from '../../lib/useMediaSrc';
 import { useStore } from '../../lib/store';
 import NeonButton from '../NeonButton';
 import type { Reel } from '../../types';
@@ -107,12 +108,13 @@ export default function Reels() {
 
 function ReelCard({ reel, onDelete }: { reel: Reel; onDelete: () => void }) {
   const me = useStore((s) => s.me);
-  const ref = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const reelSrc = useMediaSrc('chat-media', reel.media_path);
   const embed = reel.source === 'tiktok' ? tiktokEmbed(reel.tiktok_url ?? '') : null;
 
   useEffect(() => {
-    const el = ref.current;
+    const el = cardRef.current;
     if (!el) return;
     const tryPlay = () => {
       const v = videoRef.current;
@@ -146,7 +148,7 @@ function ReelCard({ reel, onDelete }: { reel: Reel; onDelete: () => void }) {
 
   return (
     <div
-      ref={ref}
+      ref={cardRef}
       className="h-full snap-start flex items-center justify-center relative lg:h-[70vh] lg:min-h-[520px] lg:rounded-2xl lg:border lg:border-white/10 lg:overflow-hidden lg:bg-black/30"
     >
       <div className="relative w-full max-w-[420px] lg:max-w-none h-full flex items-center justify-center px-4">
@@ -162,7 +164,7 @@ function ReelCard({ reel, onDelete }: { reel: Reel; onDelete: () => void }) {
         ) : reel.media_path ? (
           <video
             ref={videoRef}
-            src={mediaUrl('chat-media', reel.media_path)}
+            src={reelSrc}
             autoPlay
             loop
             muted
