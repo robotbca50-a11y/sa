@@ -1042,7 +1042,8 @@ export function scanRequest(req, uid = null) {
   const icewallFindings = checkIcewall(req, ip);
   for (const f of icewallFindings) escalateThreat(ip, f.type, f.severity, f.detail, f.weight);
 
-  const fullUrl = `${req.method} ${req.url}`;
+  const decodedUrl = (() => { try { return decodeURIComponent(req.url || ''); } catch { return req.url || ''; } })();
+  const fullUrl = `${req.method} ${decodedUrl}`;
   const bodyStr = req._bodyScan || '';
   const allHeaders = JSON.stringify(req.headers);
 
@@ -1050,15 +1051,15 @@ export function scanRequest(req, uid = null) {
 
   for (const group of ALL_SIGNATURES) {
     for (const sig of group.sigs) {
-      if (sig.test(fullUrl) || sig.test(bodyStr) || sig.test(allHeaders) || sig.test(ua)) {
+      if (sig.test(fullUrl) || sig.test(decodedUrl) || sig.test(bodyStr) || sig.test(allHeaders) || sig.test(ua)) {
         findings.push({ type: group.name, severity: group.severity, detail: sig.source.slice(0, 80), weight: group.weight });
         break;
       }
     }
   }
 
-  if (req.url) {
-    if (req.url.includes('..') || req.url.includes('%2e%2e') || req.url.includes('%252e%252e')) {
+  if (decodedUrl) {
+    if (decodedUrl.includes('..') || decodedUrl.includes('%2e%2e') || decodedUrl.includes('%252e%252e')) {
       findings.push({ type: 'PATH_TRAVERSAL', severity: 'critical', detail: 'Dot-dot in URL', weight: 30 });
     }
   }
@@ -1068,7 +1069,7 @@ export function scanRequest(req, uid = null) {
   }
 
   const botPatterns = /bot|spider|crawler|curl|wget|python|java\/|go-http|libwww|scrapy|headless|phantom|selenium/i;
-  if (botPatterns.test(ua) && !req.url?.startsWith('/api/')) {
+  if (botPatterns.test(ua) && !decodedUrl?.startsWith('/api/')) {
     findings.push({ type: 'BOT_CRAWL', severity: 'low', detail: `Bot UA: ${ua.slice(0, 80)}`, weight: 3 });
   }
 

@@ -55,10 +55,15 @@ app.use((req, res, next) => {
 // ─── THREAT ENGINE: body scan + global scan ──────────────────
 app.use(bodyScanMiddleware);
 
+// ─── HEALTHCHECK (must be before scan middleware) ────────────
+app.get('/health', (req, res) => res.status(200).json({ ok: true }));
+app.get('/api/health', (req, res) => res.status(200).json({ ok: true }));
+
 app.use((req, res, next) => {
   if (req.path === '/api/hp/log') return next();
   if (req.path === '/api/admin/security') return next();
   if (req.path === '/api/admin/unquarantine') return next();
+  if (req.path === '/health' || req.path === '/api/health') return next();
   const uid = req.headers['x-nexus-user-id'] || null;
   const result = scanRequest(req, uid);
   if (!result.allowed) {
