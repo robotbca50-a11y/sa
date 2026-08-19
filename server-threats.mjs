@@ -69,11 +69,14 @@ const SUPABASE_BLOCKED_TTL = 60_000;
 
 async function syncBlockedIPsFromSupabase() {
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/blocked_ips?select=ip,is_permanent,blocked_until,threat_score&or=(is_permanent.eq.true,blocked_until.gt.now())`, {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/sync_blocked_ips`, {
+      method: 'POST',
       headers: {
         apikey: SUPABASE_ANON_KEY,
         Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
       },
+      body: '{}',
     });
     if (!res.ok) return;
     const rows = await res.json();
@@ -463,6 +466,10 @@ function isIPBlocked(ip) {
   }
   const cached = SUPABASE_BLOCKED_CACHE.get(ip);
   if (cached && Date.now() - cached < SUPABASE_BLOCKED_TTL) return true;
+  // Cache miss — check Supabase directly (async fallback, fire-and-forget)
+  supabaseCheckBlocked(ip).then((blocked) => {
+    if (blocked) SUPABASE_BLOCKED_CACHE.set(ip, Date.now());
+  }).catch(() => {});
   return false;
 }
 
