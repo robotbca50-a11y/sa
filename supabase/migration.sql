@@ -2581,8 +2581,8 @@ end $$;
 
 create or replace function public.log_security_event(
   p_ip text,
-  p_user_id uuid default null,
   p_event_type text,
+  p_user_id uuid default null,
   p_severity text default 'low',
   p_detail text default null,
   p_meta jsonb default null
