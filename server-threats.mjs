@@ -104,7 +104,7 @@ const XSS = [
   /expression\s*\(/i, /data\s*:\s*text\/html/i,
   /document\s*\.\s*(cookie|write|location|domain|referrer|title|body|innerHTML|outerHTML)/i,
   /window\s*\.\s*(location|open|eval|name|status|length|parent|top|self|frames|opener)/i,
-  /(\beval\s*\()/i, /(\balert\s*\()/i, /(\bconfirm\s*\())/i, /(\bprompt\s*\()/i,
+  /(\beval\s*\()/i, /(\balert\s*\()/i, /(\bconfirm\s*\()/i, /(\bprompt\s*\()/i,
   /document\s*\.\s*URL/i, /document\s*\.\s*documentURI/i, /document\s*\.\s*cookie/i,
   /window\s*\.\s*location/i, /location\s*\.\s*(href|replace|assign)/i,
   /(\btoString\s*\(\s*\))/i, /(\bvalueOf\s*\(\s*\))/i,
@@ -171,7 +171,7 @@ const SCANNER = [
   /(nikto|sqlmap|nmap|masscan|zgrab|gobuster|dirb|wfuzz|ffuf|nuclei|httpx|subfinder)/i,
   /(acunetix|burpsuite|owasp\s*zap|appscan|netsparker|w3af|arachni|skipfish)/i,
   /(qualys|openvas|nessus|metasploit|cobalt\s*strike|sliver|havij)/i,
-  /(wpscan|joomscan|droopescan|cmseek|radar)|i,
+  /(wpscan|joomscan|droopescan|cmseek|radar)/i,
   /(amass|sublist3r|knock|dnsrecon|dnsenum)/i,
   /(hydra|medusa|ncrack|john|hashcat)/i,
   /(dirbuster|dirsearch|feroxbuster|rustscan)/i,
@@ -207,10 +207,10 @@ const SSRF = [
 ];
 
 const LOG4SHELL = [
-  /(\$\{jndi:(ldap|ldaps|rmi|dns|corba|iiop|nds|nis|http)/i,
+  /(\$\{jndi:(ldap|ldaps|rmi|dns|corba|iiop|nds|nis|http)\})/i,
   /(\$\{.*:-.*\})/i,
-  /(\$\{env:/i, /(\$\{lower:/i, /(\$\{upper:/i,
-  /(\$\{date:/i, /(\$\{::-\})/i,
+  /(\$\{env:)/i, /(\$\{lower:)/i, /(\$\{upper:)/i,
+  /(\$\{date:)/i, /(\$\{::-\})/i,
 ];
 
 const CRYPTOJACKING = [

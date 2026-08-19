@@ -2370,7 +2370,7 @@ begin
 
   create policy "realtime_read" on public.stories
     for select using (
-      author_id = public.auth_user_id()
+      user_id = public.auth_user_id()
       or exists (
         select 1 from public.conversations c
         where (c.user_a = public.auth_user_id() or c.user_b = public.auth_user_id())
