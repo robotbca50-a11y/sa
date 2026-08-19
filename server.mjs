@@ -60,6 +60,7 @@ app.get('/health', (req, res) => res.status(200).json({ ok: true }));
 app.get('/api/health', (req, res) => res.status(200).json({ ok: true }));
 
 app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/') && !req.path.startsWith('/media/')) return next();
   if (req.path === '/api/hp/log') return next();
   if (req.path === '/api/admin/security') return next();
   if (req.path === '/api/admin/unquarantine') return next();

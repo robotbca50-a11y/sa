@@ -748,7 +748,7 @@ export function panicWipe() {
 const ICEWALL = {
   MAX_METHODS: new Set(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD']),
   FORBIDDEN_HEADERS: new Set([
-    'x-forwarded-host', 'x-original-url', 'x-rewrite-url',
+    'x-original-url', 'x-rewrite-url',
     'x-cluster-client-ip', 'x-forwarded-server',
   ]),
   FORBIDDEN_METHODS: new Set(['TRACE', 'CONNECT', 'TRACK', 'DEBUG']),
