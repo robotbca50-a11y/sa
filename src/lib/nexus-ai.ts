@@ -7,7 +7,7 @@
 const STORAGE_KEY = 'nexus:nexusai';
 const API_KEY = 'b1ffab56f91343cebb31d3e40c43ad54.9tFHCtoDIj-dy2UIBeUeeXEH';
 const API_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const MODEL = 'mistralai/mistral-7b-instruct:free';
+const MODEL = 'meta-llama/llama-3.1-8b-instruct:free';
 const MAX_SESSIONS = 10;
 const TOTAL_DAYS = 730;
 
