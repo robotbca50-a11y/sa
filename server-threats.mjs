@@ -443,14 +443,14 @@ function checkRequestHealth(req) {
 // LAYER 601-700: SESSION FORTRESS
 // ═══════════════════════════════════════════════════════════
 
-function bindSession(token, ip, ua) {
+export function bindSession(token, ip, ua) {
   const hash = crypto.createHash('sha256').update(token).digest('hex').slice(0, 32);
   const binding = { ip, ua: (ua || '').slice(0, 200), createdAt: Date.now(), lastSeen: Date.now() };
   TOKEN_BINDINGS.set(hash, binding);
   return hash;
 }
 
-function validateSession(token, ip, ua) {
+export function validateSession(token, ip, ua) {
   const hash = crypto.createHash('sha256').update(token).digest('hex').slice(0, 32);
   const binding = TOKEN_BINDINGS.get(hash);
   if (!binding) return { valid: true, new: true };
