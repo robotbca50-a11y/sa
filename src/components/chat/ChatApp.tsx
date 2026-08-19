@@ -53,6 +53,7 @@ import WatchParty from '../features/WatchParty';
 import VideoCall, { IncomingCallOverlay } from '../features/VideoCall';
 import GroupVideoCall, { IncomingGroupCallOverlay } from '../features/GroupVideoCall';
 import AiPanel from '../features/AiPanel';
+import DailyQuestion from '../DailyQuestion';
 import InstallBanner from '../InstallBanner';
 import { showInstallBanner } from '../../lib/install';
 import CyberBg from './CyberBg';
@@ -1562,6 +1563,7 @@ export default function ChatApp() {
           >
             <Sparkles size={17} />
           </button>
+          <DailyQuestion />
           <button
             onClick={async () => {
               const ok = await ensurePush();

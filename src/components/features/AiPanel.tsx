@@ -31,7 +31,7 @@ export default function AiPanel({ onClose }: { onClose: () => void }) {
     setThinking(true);
     setTimeout(async () => {
       const remote = await aiModel(t).catch(() => null);
-      const reply = remote ?? brainAssistantReply(t);
+      const reply = remote ?? await brainAssistantReply(t);
       setMsgs((m) => [...m, { role: 'ai', text: reply }]);
       setThinking(false);
       setMemVer((v) => v + 1);

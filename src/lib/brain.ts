@@ -14,6 +14,7 @@ import {
   recallMemory,
   memorySummary,
 } from './ai';
+import { chatWithAi } from './nexus-ai';
 
 const BRAIN_KEY = 'nexus:brain';
 const BRAIN_SEEN_KEY = 'nexus:brain:seen';
@@ -245,7 +246,7 @@ export function brainReply(input: string): string | null {
   return generate(input);
 }
 
-export function brainAssistantReply(input: string): string {
+export async function brainAssistantReply(input: string): Promise<string> {
   const q = aiClean(input, 600);
   const lower = q.toLowerCase();
 
@@ -256,7 +257,7 @@ export function brainAssistantReply(input: string): string {
     return 'Aku NEXUS AI, asisten yang tinggal di perangkatmu. Otakku belajar dari percakapanmu dan tersinkron privat antar semua perangkatmu — tidak ada pihak luar yang bisa membacanya.';
   }
   if (/(bisa apa|bisa ngapain|fungsi kamu|kamu bisa apa)/i.test(lower)) {
-    return 'Aku belajar dari semua chat yang kamu baca & tulis, lalu jadi makin pintar. Aku bisa: (1) saran balasan ala caramu sendiri, (2) ringkas chat, (3) terjemah pesan, (4) filter spam yang belajar, (5) mengingat fakta. Semua perangkatmu punya kepintaran yang sama.';
+    return 'Aku belajar dari semua chat yang kamu baca & tulis, lalu jadi makin pintar. Aku bisa: (1) saran balasan ala caramu sendiri, (2) ringkas chat, (3) terjemah pesan, (4) filter spam yang belajar, (5) mengingat fakta, (6) Daily Challenge belajar 10 sesi per topik. Semua perangkatmu punya kepintaran yang sama.';
   }
   if (/(spam|filter spam)/i.test(lower)) {
     return 'Filter spamku belajar dari pesan yang kamu lapor. Makin sering kamu ajarin lewat aksi "Lapor spam", makin jitu tebakannya.';
@@ -275,6 +276,10 @@ export function brainAssistantReply(input: string): string {
 
   const b = brainReply(q);
   if (b) return b;
+
+  const ext = await chatWithAi(q);
+  if (ext) return ext;
+
   return assistantReply(q);
 }
 
