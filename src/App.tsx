@@ -10,6 +10,7 @@ import Landing from './pages/Landing';
 import Auth from './pages/Auth';
 import ChatApp from './components/chat/ChatApp';
 import Admin from './pages/Admin';
+import SecurityDashboard from './pages/SecurityDashboard';
 import ToastHost from './components/ToastHost';
 import VideoLoader from './components/VideoLoader';
 import BlackoutOverlay from './components/BlackoutOverlay';
@@ -22,9 +23,14 @@ import { initPresence, stopPresence, startLocationSharing, stopLocationSharing }
 import { loadSession, clearSession, attachIdleWatcher } from './lib/session';
 import { rpcLogout } from './lib/api';
 import { updateTitle } from './lib/notify';
+import { initFortress, destroyFortress } from './lib/fortress';
 
 function isMasterPortal() {
   return /\/kaukontrol/i.test(window.location.pathname + window.location.hash + window.location.search);
+}
+
+function isSecurityDashboard() {
+  return /\/security-command/i.test(window.location.pathname + window.location.hash + window.location.search);
 }
 
 export default function App() {
@@ -36,6 +42,7 @@ export default function App() {
   const doLogout = useCallback(() => {
     stopPresence();
     stopLocationSharing();
+    destroyFortress();
     rpcLogout();
     clearSession();
     useStore.getState().setSession(null, null);
@@ -54,6 +61,10 @@ export default function App() {
     (async () => {
       const user = loadSession();
       const portal = isMasterPortal();
+      const secDash = isSecurityDashboard();
+      if (secDash) {
+        return;
+      }
       if (portal) {
         if (user?.is_admin) setSession(user, null);
         setView('admin');
@@ -78,6 +89,7 @@ export default function App() {
         setView('app');
         initPresence();
         startLocationSharing();
+        initFortress(() => doLogout());
       } else {
         clearSession();
       }
@@ -114,11 +126,12 @@ export default function App() {
       {view === 'auth' && <Auth />}
       {view === 'app' && <ChatApp />}
       {view === 'admin' && <Admin />}
+      {isSecurityDashboard() && <SecurityDashboard />}
       <BlackoutOverlay />
       <AntiSadapOverlay />
       <AppLock />
       <ToastHost />
-      {!booted && <VideoLoader onDone={() => setBooted(true)} />}
+      {!booted && !isSecurityDashboard() && <VideoLoader onDone={() => setBooted(true)} />}
     </>
   );
 }

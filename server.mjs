@@ -11,12 +11,21 @@ import path from 'node:path';
 import { createWriteStream } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  scanRequest, installHoneypots, bodyScanMiddleware,
+  getSecurityState, manualBlockIP, manualUnblockIP, manualClearThreats,
+  registerMasterUID,
+  activateKillSwitch, deactivateKillSwitch, killAllSessions, panicWipe,
+  bindSession, validateSession,
+  executeFireball, unquarantine,
+} from './server-threats.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://lbiwnxkonxgnolmcuxap.supabase.co';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'sb_publishable_DXiqWZix9UuPv8-jJYy2Bg_jjZgJmFT';
+const ADMIN_SECRET = process.env.ADMIN_SECRET || 'nexus2024';
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const MAX_BIG_BYTES = Number(process.env.MAX_BIG_BYTES || 1024 * 1024 * 1024);
 const MAX_UPLOADS_PER_MIN = Number(process.env.MAX_UPLOADS_PER_MIN || 10);
@@ -26,6 +35,8 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 const app = express();
 app.disable('x-powered-by');
 
+app.use(express.json({ limit: '1mb' }));
+
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -33,23 +44,107 @@ app.use((req, res, next) => {
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
-  res.setHeader(
-    'Permissions-Policy',
-    'browsing-topics=(), interest-cohort=(), attribution-reporting=(), run-ad-auction=(), join-ad-interest-group=(), shared-storage=()'
-  );
+  res.setHeader('Permissions-Policy', 'browsing-topics=(), interest-cohort=(), attribution-reporting=(), run-ad-auction=(), join-ad-interest-group=(), shared-storage=(), camera=(), microphone=(), geolocation=()');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data: https://*.tile.openstreetmap.org https://*.gstatic.com; connect-src 'self' https://*.supabase.co wss://*.supabase.co; media-src 'self' blob:; font-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
   if (req.path.endsWith('.html') || req.path === '/' || !path.extname(req.path)) {
     res.setHeader('Cache-Control', 'no-store');
   }
   next();
 });
 
+// ─── THREAT ENGINE: body scan + global scan ──────────────────
+app.use(bodyScanMiddleware);
+
+app.use((req, res, next) => {
+  if (req.path === '/api/hp/log') return next();
+  if (req.path === '/api/admin/security') return next();
+  if (req.path === '/api/admin/unquarantine') return next();
+  const uid = req.headers['x-nexus-user-id'] || null;
+  const result = scanRequest(req, uid);
+  if (!result.allowed) {
+    return res.status(result.status || 403).json({ error: result.msg || 'Akses ditolak.' });
+  }
+  if (result.throttled && result.msg) {
+    res.setHeader('X-Threat-Warning', result.msg);
+  }
+  if (result.warnings?.length > 0) {
+    res.setHeader('X-Threat-Detected', result.warnings.map((w) => w.type).join(','));
+  }
+  if (result.fireball) {
+    const ip = (req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown').replace(/^::ffff:/, '');
+    const served = executeFireball(ip, result.fireball, res);
+    if (served) return;
+  }
+  next();
+});
+
+// ─── HONEYPOTS ──────────────────────────────────────────────
+installHoneypots(app);
+
+// ─── ADMIN SECURITY DASHBOARD ───────────────────────────────
 function clientIp(req) {
   return (req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown');
+}
+
+app.post('/api/admin/security', (req, res) => {
+  const { action, ip, perm, secret, reason } = req.body || {};
+  if (secret !== ADMIN_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  switch (action) {
+    case 'get_state':
+      return res.json(getSecurityState());
+    case 'block_ip':
+      if (!ip) return res.status(400).json({ error: 'IP required' });
+      manualBlockIP(ip, !!perm);
+      return res.json({ ok: true, msg: `IP ${ip} ${perm ? 'permanently' : 'temporarily'} blocked` });
+    case 'unblock_ip':
+      if (!ip) return res.status(400).json({ error: 'IP required' });
+      manualUnblockIP(ip);
+      return res.json({ ok: true, msg: `IP ${ip} unblocked` });
+    case 'kill_switch':
+      activateKillSwitch(reason || 'manual_admin');
+      return res.json({ ok: true, msg: 'Kill switch activated — all access blocked' });
+    case 'kill_switch_off':
+      deactivateKillSwitch();
+      return res.json({ ok: true, msg: 'Kill switch deactivated' });
+    case 'kill_sessions':
+      killAllSessions();
+      return res.json({ ok: true, msg: 'All sessions terminated' });
+    case 'panic_wipe':
+      panicWipe();
+      return res.json({ ok: true, msg: 'PANIC WIPE executed — all data cleared' });
+    case 'clear_all':
+      manualClearThreats();
+      return res.json({ ok: true, msg: 'All threat data cleared' });
+    case 'ban_ip':
+      if (!ip) return res.status(400).json({ error: 'IP required' });
+      manualBlockIP(ip, true);
+      return res.json({ ok: true, msg: `IP ${ip} permanently banned` });
+    default:
+      return res.status(400).json({ error: 'Unknown action' });
+  }
+});
+
+app.post('/api/admin/unquarantine', (req, res) => {
+  const { secret, ip } = req.body || {};
+  if (secret !== ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+  if (!ip) return res.status(400).json({ error: 'IP required' });
+  unquarantine(ip);
+  return res.json({ ok: true, msg: `IP ${ip} unquarantined` });
+});
+
+// ─── RATE LIMITS ────────────────────────────────────────────
+function clientIpClean(req) {
+  return (req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown').replace(/^::ffff:/, '');
 }
 
 const rate = new Map();
 function rateLimited(ip) {
   const now = Date.now();
+  if (rate.size > 10_000) {
+    for (const [k, v] of rate) if (now > v.reset) rate.delete(k);
+  }
   const e = rate.get(ip);
   if (!e || now > e.reset) {
     rate.set(ip, { count: 1, reset: now + 60_000 });
@@ -108,22 +203,33 @@ function genRateLimited(ip, maxPerWindow, windowMs) {
 }
 
 app.use('/api', (req, res, next) => {
-  if (genRateLimited(clientIp(req), 120, 10_000)) {
+  if (genRateLimited(clientIpClean(req), 120, 10_000)) {
     return res.status(429).json({ error: 'Terlalu banyak permintaan — tunggu sebentar.' });
   }
   next();
 });
 app.use('/media', (req, res, next) => {
-  if (genRateLimited(clientIp(req), 200, 10_000)) {
+  if (genRateLimited(clientIpClean(req), 200, 10_000)) {
     return res.status(429).json({ error: 'Terlalu banyak permintaan — tunggu sebentar.' });
   }
   next();
 });
 
+// ─── UPLOAD ─────────────────────────────────────────────────
 app.post('/api/upload', async (req, res) => {
   const uid = await authUser(req);
   if (!uid) return res.status(401).json({ error: 'Sesi tidak valid. Login ulang.' });
-  if (rateLimited(clientIp(req))) return res.status(429).json({ error: 'Terlalu banyak upload — tunggu sebentar.' });
+  if (rateLimited(clientIpClean(req))) return res.status(429).json({ error: 'Terlalu banyak upload — tunggu sebentar.' });
+
+  const ct = String(req.headers['content-type'] || '').toLowerCase();
+  const ALLOWED_TYPES = [
+    'image/', 'video/', 'audio/', 'application/pdf',
+    'application/zip', 'application/x-zip',
+    'text/plain', 'application/octet-stream'
+  ];
+  if (ct && !ALLOWED_TYPES.some((t) => ct.startsWith(t))) {
+    return res.status(415).json({ error: 'Tipe file tidak didukung.' });
+  }
 
   const len = Number(req.headers['content-length'] || 0);
   if (len > MAX_BIG_BYTES) return res.status(413).json({ error: `File melebihi batas ${Math.round(MAX_BIG_BYTES / 1024 / 1024)} MB.` });
@@ -177,6 +283,7 @@ app.post('/api/upload', async (req, res) => {
   res.status(201).json({ path: rel, size: got });
 });
 
+// ─── MEDIA ──────────────────────────────────────────────────
 app.get('/media/*splat', async (req, res) => {
   const uid = await authUser(req);
   if (!uid) return res.status(401).json({ error: 'Sesi tidak valid.' });
@@ -203,6 +310,7 @@ app.delete('/api/media/all', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ─── SPA FALLBACK ───────────────────────────────────────────
 const dist = path.join(__dirname, 'dist');
 app.use(express.static(dist));
 app.get('/*splat', (req, res, next) => {
@@ -210,6 +318,8 @@ app.get('/*splat', (req, res, next) => {
   res.sendFile(path.join(dist, 'index.html'));
 });
 
+// ─── START ──────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`NEXUS media server on :${PORT} (data: ${DATA_DIR})`);
+  console.log(`THREAT ENGINE: active | HONEYPOTS: armed | MASTER: immune`);
 });

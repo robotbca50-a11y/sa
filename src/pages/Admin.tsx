@@ -25,6 +25,10 @@ function gmLink(lat: number, lng: number) {
   return `https://www.google.com/maps?q=${lat},${lng}`;
 }
 
+function escHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 export default function Admin() {
   const setView = useStore((s) => s.setView);
   const [logged, setLogged] = useState(!!sessionStorage.getItem('nexus:master'));
@@ -124,7 +128,7 @@ export default function Admin() {
         const m = L.marker([r.lat, r.lng], { icon })
           .addTo(leafletRef.current!)
           .bindPopup(
-            `<b>${r.username ?? r.user_id}</b><br/>lat ${r.lat.toFixed(4)}, lng ${r.lng.toFixed(4)}<br/><a href="${gmLink(r.lat, r.lng)}" target="_blank">Buka di Google Maps</a>`,
+            `<b>${escHtml(r.username ?? r.user_id)}</b><br/>lat ${r.lat.toFixed(4)}, lng ${r.lng.toFixed(4)}<br/><a href="${gmLink(r.lat, r.lng)}" target="_blank" rel="noopener noreferrer">Buka di Google Maps</a>`,
           );
         markersRef.current[r.user_id] = m;
       }

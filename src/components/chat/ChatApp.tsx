@@ -26,7 +26,7 @@ import {
 } from '../../lib/api';
 import {
   deriveSharedKey, encryptText, decryptText, randomAESKey, exportAESKey, encryptToRecipient,
-  decryptFromSender, importAESKey, bufToB64, encryptForKeys, getPasswordKey,
+  decryptFromSender, importAESKey, bufToB64, encryptForKeys, getPasswordKey, setPasswordKey,
   exportPublicRaw,
 } from '../../lib/crypto';
 import { savePrivateKey } from '../../lib/keystore';
@@ -211,14 +211,16 @@ export default function ChatApp() {
       },
     ).catch(() => {});
 
-    rpcMaybeCleanup()
-      .then((cleaned) => {
-        if (cleaned) {
-          clearCache();
-          clearChatCache();
-        }
-      })
-      .catch(() => {});
+    if (me?.is_admin) {
+      rpcMaybeCleanup()
+        .then((cleaned) => {
+          if (cleaned) {
+            clearCache();
+            clearChatCache();
+          }
+        })
+        .catch(() => {});
+    }
 
     const cached = readCache<{ users: User[]; dms: any[] }>(`nexus:cache:${me.id}`);
     if (cached) {
@@ -1469,9 +1471,14 @@ export default function ChatApp() {
     if (me) rpcLogAccess(me.id, 'logout').catch(() => {});
     stopPresence();
     clearCache();
+    clearChatCache();
     unregisterNativePush().catch(() => {});
     await unsubscribePush().catch(() => {});
     rpcLogout();
+    keyMapRef.current = {};
+    setKeyMap({});
+    setDecryptPrivateKey(null);
+    setPasswordKey(null);
     clearSession();
     setSession(null, null);
     setView('landing');

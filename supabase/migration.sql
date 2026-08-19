@@ -383,19 +383,18 @@ on conflict (id) do update set public = true, file_size_limit = 5242880;
 
 do $$
 begin
-  if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'nexus public upload') then
-    create policy "nexus public upload" on storage.objects
-      for insert to anon, authenticated with check (bucket_id in ('chat-media','avatars'));
-  end if;
-  if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'nexus public read') then
-    create policy "nexus public read" on storage.objects
-      for select to anon, authenticated using (bucket_id in ('chat-media','avatars'));
-  end if;
+  drop policy if exists "nexus public upload" on storage.objects;
+  drop policy if exists "nexus public read" on storage.objects;
+  drop policy if exists "nexus cleanup" on storage.objects;
 
-  if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'nexus cleanup') then
-    create policy "nexus cleanup" on storage.objects
-      for delete to anon, authenticated using (bucket_id in ('chat-media','avatars'));
-  end if;
+  create policy "nexus public upload" on storage.objects
+    for insert to authenticated with check (bucket_id in ('chat-media','avatars'));
+
+  create policy "nexus public read" on storage.objects
+    for select to authenticated using (bucket_id in ('chat-media','avatars'));
+
+  create policy "nexus cleanup" on storage.objects
+    for delete to authenticated using (bucket_id in ('chat-media','avatars'));
 end $$;
 
 
@@ -456,11 +455,11 @@ as $$
 declare
   v_ip text := public.client_ip();
   v_uid uuid := public.auth_user_id();
-  v_key text := v_ip || ':' || coalesce(v_uid::text, '') || ':' || to_char(now(), 'YYYYMMDDHH24MISS');
+  v_key text := v_ip || ':' || coalesce(v_uid::text, 'anon');
   v_cnt bigint;
 begin
   insert into public.request_counters (bucket_key, ip, bucket_start, count)
-  values (v_key, v_ip, date_trunc('second', now()), 1)
+  values (v_key, v_ip, date_trunc('minute', now()), 1)
   on conflict (bucket_key) do update set count = request_counters.count + 1
   returning count into v_cnt;
   if v_cnt > p_max then
@@ -517,7 +516,7 @@ end $$;
 
 create or replace function public.auth_user_id()
 returns uuid
-language plpgsql stable set search_path = public
+language plpgsql security definer stable set search_path = public
 as $$
 declare
   v_token text;
@@ -764,6 +763,12 @@ begin
   if p_username is null or length(btrim(p_username)) < 2 then
     raise exception 'Username minimal 2 karakter';
   end if;
+  if length(btrim(p_username)) > 30 then
+    raise exception 'Username maksimal 30 karakter';
+  end if;
+  if btrim(p_username) !~ '^[a-zA-Z0-9_]+$' then
+    raise exception 'Username hanya boleh huruf, angka, dan underscore';
+  end if;
   if p_password is null or length(p_password) < 4 then
     raise exception 'Password minimal 4 karakter';
   end if;
@@ -888,7 +893,7 @@ begin
 end $$;
 
 create or replace function public.list_pending_users(p_admin_username text, p_admin_password text)
-returns setof public.users
+returns table (id uuid, username text, status text, public_key text, is_admin boolean, created_at timestamptz)
 language plpgsql security definer set search_path = public
 as $$
 begin
@@ -896,7 +901,8 @@ begin
   if not public.admin_check(p_admin_username, p_admin_password) then
     raise exception 'Akses ditolak: bukan master';
   end if;
-  return query select * from public.users where status = 'pending' order by created_at desc;
+  return query select u.id, u.username, u.status, u.public_key, u.is_admin, u.created_at
+  from public.users u where u.status = 'pending' order by u.created_at desc;
 end $$;
 
 create or replace function public.set_user_status(p_admin_username text, p_admin_password text, p_target_id uuid, p_status text)
@@ -1332,6 +1338,12 @@ begin
   ) then
     raise exception 'Akses ditolak: bukan pengirim pesan';
   end if;
+  if length(p_ciphertext) > 65536 then
+    raise exception 'Ciphertext terlalu panjang';
+  end if;
+  if p_ciphertexts is not null and pg_column_size(p_ciphertexts) > 1048576 then
+    raise exception 'Ciphertexts terlalu besar';
+  end if;
   update public.messages set ciphertext = p_ciphertext, iv = p_iv, ciphertexts = coalesce(p_ciphertexts, ciphertexts), edited_at = now()
   where id = p_message_id and sender_id = v_uid;
 end $$;
@@ -1418,6 +1430,9 @@ begin
   end if;
   if p_name is null or length(btrim(p_name)) < 1 then
     raise exception 'Nama grup minimal 1 karakter';
+  end if;
+  if length(btrim(p_name)) > 100 then
+    raise exception 'Nama grup maksimal 100 karakter';
   end if;
   insert into public.group_chats (name, created_by) values (btrim(p_name), v_uid) returning id into gid;
   insert into public.group_members (group_id, user_id) values (gid, v_uid) on conflict do nothing;
@@ -1565,6 +1580,9 @@ begin
     where gm.id = p_message_id and gm.sender_id = v_uid and gmb.user_id = v_uid
   ) then
     raise exception 'Akses ditolak: bukan pengirim pesan';
+  end if;
+  if length(p_ciphertext) > 65536 then
+    raise exception 'Ciphertext terlalu panjang';
   end if;
   update public.group_messages set ciphertext = p_ciphertext, iv = p_iv, edited_at = now()
   where id = p_message_id and sender_id = v_uid;
@@ -2211,14 +2229,25 @@ create table if not exists public.cleanup_log (
 );
 insert into public.cleanup_log (id) values (1) on conflict (id) do nothing;
 
-create or replace function public.maybe_cleanup()
+create or replace function public.maybe_cleanup(p_admin_username text default null, p_admin_password text default null)
 returns boolean
 language plpgsql security definer set search_path = public
 as $$
 declare v_last timestamptz;
 begin
   perform public.rate_limit();
-  perform public.require_auth();
+  if p_admin_username is not null and p_admin_password is not null then
+    if not public.admin_check(p_admin_username, p_admin_password) then
+      raise exception 'Akses ditolak: hanya admin yang bisa menjalankan cleanup';
+    end if;
+  else
+    perform public.require_auth();
+    if not exists (
+      select 1 from public.users where id = public.auth_user_id() and is_admin = true
+    ) then
+      raise exception 'Akses ditolak: hanya admin yang bisa menjalankan cleanup';
+    end if;
+  end if;
   select last_clean into v_last from public.cleanup_log where id = 1;
   if v_last is not null and v_last > now() - interval '24 hours' then
     return false;
@@ -2291,17 +2320,62 @@ drop policy if exists "realtime_read" on public.user_locations;
 
 
 do $$
-declare t text;
 begin
-  foreach t in array array['messages','group_messages','reactions','group_reactions','stories']
-  loop
-    if not exists (
-      select 1 from pg_policies
-      where schemaname = 'public' and tablename = t and policyname = 'realtime_read'
-    ) then
-      execute format('create policy "realtime_read" on public.%I for select using (true)', t);
-    end if;
-  end loop;
+  drop policy if exists "realtime_read" on public.messages;
+  drop policy if exists "realtime_read" on public.group_messages;
+  drop policy if exists "realtime_read" on public.reactions;
+  drop policy if exists "realtime_read" on public.group_reactions;
+  drop policy if exists "realtime_read" on public.stories;
+end $$;
+
+do $$
+begin
+  create policy "realtime_read" on public.messages
+    for select using (
+      exists (
+        select 1 from public.conversations c
+        where c.id = messages.conversation_id
+          and (c.user_a = public.auth_user_id() or c.user_b = public.auth_user_id())
+      )
+    );
+
+  create policy "realtime_read" on public.group_messages
+    for select using (
+      exists (
+        select 1 from public.group_members gm
+        where gm.group_id = group_messages.group_id
+          and gm.user_id = public.auth_user_id()
+      )
+    );
+
+  create policy "realtime_read" on public.reactions
+    for select using (
+      exists (
+        select 1 from public.messages m
+        join public.conversations c on c.id = m.conversation_id
+        where m.id = reactions.message_id
+          and (c.user_a = public.auth_user_id() or c.user_b = public.auth_user_id())
+      )
+    );
+
+  create policy "realtime_read" on public.group_reactions
+    for select using (
+      exists (
+        select 1 from public.group_messages gm
+        join public.group_members gmb on gmb.group_id = gm.group_id
+        where gm.id = group_reactions.message_id
+          and gmb.user_id = public.auth_user_id()
+      )
+    );
+
+  create policy "realtime_read" on public.stories
+    for select using (
+      author_id = public.auth_user_id()
+      or exists (
+        select 1 from public.conversations c
+        where (c.user_a = public.auth_user_id() or c.user_b = public.auth_user_id())
+      )
+    );
 end $$;
 
 
@@ -2456,4 +2530,113 @@ begin
   from public.ai_brain b
   where b.user_id = v_uid
   limit 1;
+end $$;
+
+
+-- ============================================================
+-- NEXUS SECURITY: FORTRESS SYSTEM
+-- ============================================================
+
+create table if not exists public.security_events (
+  id uuid default gen_random_uuid() primary key,
+  ip text not null,
+  user_id uuid,
+  event_type text not null,
+  severity text not null default 'low',
+  detail text,
+  meta jsonb,
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_security_events_ip on public.security_events (ip);
+create index if not exists idx_security_events_type on public.security_events (event_type);
+create index if not exists idx_security_events_created on public.security_events (created_at desc);
+
+alter table public.security_events enable row level security;
+do $$
+begin
+  if not exists (select 1 from pg_policies where tablename = 'security_events' and policyname = 'rpc_only') then
+    create policy "rpc_only" on public.security_events for all using (false) with check (false);
+  end if;
+end $$;
+
+create table if not exists public.blocked_ips (
+  id uuid default gen_random_uuid() primary key,
+  ip text not null unique,
+  reason text,
+  is_permanent boolean default false,
+  blocked_until timestamptz,
+  threat_score int default 0,
+  created_by uuid,
+  created_at timestamptz default now()
+);
+
+alter table public.blocked_ips enable row level security;
+do $$
+begin
+  if not exists (select 1 from pg_policies where tablename = 'blocked_ips' and policyname = 'rpc_only') then
+    create policy "rpc_only" on public.blocked_ips for all using (false) with check (false);
+  end if;
+end $$;
+
+create or replace function public.log_security_event(
+  p_ip text,
+  p_user_id uuid default null,
+  p_event_type text,
+  p_severity text default 'low',
+  p_detail text default null,
+  p_meta jsonb default null
+)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+begin
+  insert into public.security_events (ip, user_id, event_type, severity, detail, meta)
+  values (p_ip, p_user_id, p_event_type, p_severity, p_detail, p_meta);
+
+  if p_severity in ('critical', 'high') then
+    insert into public.blocked_ips (ip, reason, is_permanent, blocked_until, threat_score, created_by)
+    values (
+      p_ip,
+      p_event_type || ': ' || coalesce(p_detail, ''),
+      p_severity = 'critical',
+      case when p_severity = 'critical' then now() + interval '24 hours' else now() + interval '1 hour' end,
+      case when p_severity = 'critical' then 100 else 50 end,
+      p_user_id
+    )
+    on conflict (ip) do update set
+      threat_score = greatest(blocked_ips.threat_score, excluded.threat_score),
+      blocked_until = greatest(coalesce(blocked_ips.blocked_until, now()), excluded.blocked_until),
+      reason = excluded.reason;
+  end if;
+end $$;
+
+create or replace function public.check_ip_blocked(p_ip text)
+returns boolean
+language plpgsql security definer stable set search_path = public
+as $$
+declare v_blocked boolean;
+begin
+  select exists(
+    select 1 from public.blocked_ips
+    where ip = p_ip
+      and (is_permanent = true or blocked_until > now())
+  ) into v_blocked;
+  return coalesce(v_blocked, false);
+end $$;
+
+create or replace function public.get_security_events(p_admin_username text, p_admin_password text, p_limit int default 100)
+returns table (ip text, event_type text, severity text, detail text, created_at timestamptz)
+language plpgsql security definer set search_path = public
+as $$
+begin
+  perform public.rate_limit();
+  if not public.admin_check(p_admin_username, p_admin_password) then
+    raise exception 'Akses ditolak: bukan master';
+  end if;
+  return query
+  select se.ip, se.event_type, se.severity, se.detail, se.created_at
+  from public.security_events se
+  order by se.created_at desc
+  limit p_limit;
 end $$;

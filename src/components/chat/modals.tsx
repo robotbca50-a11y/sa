@@ -200,6 +200,7 @@ export function GhostSettingsModal({ onClose }: { onClose: () => void }) {
       try {
         await navigator.clipboard.writeText(b64);
         setExpMsg('Kunci sudah disalin ke clipboard. Pindahkan ke device lain → tab login → Impor Kunci.');
+        setTimeout(() => navigator.clipboard.writeText('').catch(() => {}), 30_000);
       } catch {
         setExpMsg('Kunci tampil di bawah — salin manual. Pindahkan ke device lain → Impor Kunci.');
       }
