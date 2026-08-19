@@ -15,6 +15,7 @@ import {
   rpcPendingUsers, rpcSetUserStatus, rpcAllLocations, rpcAccessLogs, rpcUserStats,
   rpcAllUsers, rpcDeleteUser, rpcPurgeAllUsers, rpcListBlackouts, rpcSetBlackout,
   rpcAdminReports, rpcResolveReport,
+  setAdminSecret,
 } from '../lib/api';
 import { sendBlackout } from '../lib/realtime';
 import NeonButton from '../components/NeonButton';
@@ -31,9 +32,8 @@ function escHtml(s: string): string {
 
 export default function Admin() {
   const setView = useStore((s) => s.setView);
-  const [logged, setLogged] = useState(!!sessionStorage.getItem('nexus:master'));
-  const [u, setU] = useState('');
-  const [p, setP] = useState('');
+  const [logged, setLogged] = useState(false);
+  const [secretInput, setSecretInput] = useState('');
   const [err, setErr] = useState('');
   const [tab, setTab] = useState<'approve' | 'map' | 'logs' | 'users' | 'reports'>('approve');
   const [pending, setPending] = useState<User[]>([]);
@@ -48,16 +48,15 @@ export default function Admin() {
   const leafletRef = useRef<L.Map | null>(null);
   const markersRef = useRef<Record<string, L.Marker>>({});
 
-  const cred = () => JSON.parse(sessionStorage.getItem('nexus:master') ?? '{}');
-
   async function login() {
     setErr('');
     try {
-      await rpcPendingUsers(u.trim(), p);
-      sessionStorage.setItem('nexus:master', JSON.stringify({ u: u.trim(), p }));
+      setAdminSecret(secretInput.trim());
+      await rpcPendingUsers();
       setLogged(true);
       refreshAll();
     } catch (e) {
+      setAdminSecret('');
       setErr(e instanceof Error ? e.message : String(e));
     }
   }
@@ -65,23 +64,22 @@ export default function Admin() {
   const pause = (ms = 250) => new Promise((r) => setTimeout(r, ms));
 
   async function refreshAll() {
-    const c = cred();
     try {
-      const pend = await rpcPendingUsers(c.u, c.p);
+      const pend = await rpcPendingUsers();
       setPending(pend);
       await pause();
-      const loc = await rpcAllLocations(c.u, c.p);
+      const loc = await rpcAllLocations();
       setLocs(loc);
       drawMap(loc);
       await pause();
-      const lg = await rpcAccessLogs(c.u, c.p);
+      const lg = await rpcAccessLogs();
       setLogs(lg);
       await pause();
-      const st = await rpcUserStats(c.u, c.p);
+      const st = await rpcUserStats();
       setStats(st);
       await pause();
       try {
-        const rp = await rpcAdminReports(c.u, c.p);
+        const rp = await rpcAdminReports();
         setReports(rp);
       } catch {
       }
@@ -90,11 +88,11 @@ export default function Admin() {
       setLogged(false);
     }
     try {
-      const all = await rpcAllUsers(c.u, c.p);
+      const all = await rpcAllUsers();
       setAllUsers(all);
       await pause();
       try {
-        const bl = await rpcListBlackouts(c.u, c.p);
+        const bl = await rpcListBlackouts();
         setBlackouts(bl.map((b) => b.target_user_id));
       } catch {
       }
@@ -165,8 +163,7 @@ export default function Admin() {
   }, [logged]);
 
   async function acc(id: string, status: 'approved' | 'rejected') {
-    const c = cred();
-    await rpcSetUserStatus(c.u, c.p, id, status);
+    await rpcSetUserStatus(id, status);
     refreshAll();
   }
 
@@ -174,8 +171,7 @@ export default function Admin() {
     if (!window.confirm(`HAPUS permanen user "${username}"?\nSemua data mereka (chat, kunci, riwayat) akan dihapus.`)) return;
     setErr('');
     try {
-      const c = cred();
-      await rpcDeleteUser(c.u, c.p, id);
+      await rpcDeleteUser(id);
       refreshAll();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -186,8 +182,7 @@ export default function Admin() {
     if (!window.confirm('HAPUS SEMUA user kecuali master?\nSemua akun, chat, media, story, reels, dan riwayat akan dihapus PERMANEN. Aksi ini tidak bisa dibatalkan!')) return;
     setErr('');
     try {
-      const c = cred();
-      await rpcPurgeAllUsers(c.u, c.p);
+      await rpcPurgeAllUsers();
       refreshAll();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -195,10 +190,9 @@ export default function Admin() {
   }
 
   async function toggleBlackout(id: string, active: boolean) {
-    const c = cred();
     setErr('');
     try {
-      await rpcSetBlackout(c.u, c.p, id, active);
+      await rpcSetBlackout(id, active);
       setBlackouts((prev) => (active ? [...prev, id] : prev.filter((x) => x !== id)));
       sendBlackout({ target_user_id: id, active });
     } catch (e) {
@@ -209,8 +203,7 @@ export default function Admin() {
   async function resolveReport(id: string, status: string) {
     setErr('');
     try {
-      const c = cred();
-      await rpcResolveReport(c.u, c.p, id, status);
+      await rpcResolveReport(id, status);
       refreshAll();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -218,7 +211,7 @@ export default function Admin() {
   }
 
   function logout() {
-    sessionStorage.removeItem('nexus:master');
+    setAdminSecret('');
     setLogged(false);
     setView('landing');
   }
@@ -240,9 +233,7 @@ export default function Admin() {
             <ShieldCheck size={20} className="text-lime" />
             <h2 className="font-mono font-bold tracking-widest text-lime">// MASTER OVERRIDE</h2>
           </div>
-          <input value={u} onChange={(e) => setU(e.target.value)} placeholder="Username master"
-            className="w-full px-4 py-3 rounded-lg bg-black/50 border border-white/10 text-white mb-3 focus:border-lime" />
-          <input value={p} onChange={(e) => setP(e.target.value)} type="password" placeholder="Password master"
+          <input value={secretInput} onChange={(e) => setSecretInput(e.target.value)} type="password" placeholder="Admin Secret"
             onKeyDown={(e) => e.key === 'Enter' && login()}
             className="w-full px-4 py-3 rounded-lg bg-black/50 border border-white/10 text-white mb-4 focus:border-lime" />
           {err && <div className="mb-3 text-xs font-mono text-virus bg-virus/10 border border-virus/30 rounded-lg px-3 py-2">{err}</div>}

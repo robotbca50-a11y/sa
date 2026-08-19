@@ -18,6 +18,86 @@ const KILL_LOG = path.join(__dirname, 'data', 'killswitch.log');
 
 fs.mkdirSync(path.dirname(THREAT_LOG), { recursive: true });
 
+// ─── SUPABASE INTEGRATION (security_events + blocked_ips) ──
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://lbiwnxkonxgnolmcuxap.supabase.co';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'sb_publishable_DXiqWZix9UuPv8-jJYy2Bg_jjZgJmFT';
+
+async function supabaseLogThreat(ip, eventType, severity, detail, score) {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/rpc/log_security_event`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        p_ip: ip,
+        p_event_type: eventType,
+        p_severity: severity,
+        p_detail: String(detail).slice(0, 500),
+        p_meta: JSON.stringify({ score }),
+      }),
+    });
+  } catch {}
+}
+
+async function supabaseCheckBlocked(ip) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/check_ip_blocked`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ p_ip: ip }),
+    });
+    if (res.ok) {
+      const text = await res.text();
+      if (text) {
+        const data = JSON.parse(text);
+        if (data === true) return true;
+      }
+    }
+  } catch {}
+  return false;
+}
+
+const SUPABASE_BLOCKED_CACHE = new Map();
+const SUPABASE_BLOCKED_TTL = 60_000;
+
+async function syncBlockedIPsFromSupabase() {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/blocked_ips?select=ip,is_permanent,blocked_until,threat_score&or=(is_permanent.eq.true,blocked_until.gt.now())`, {
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      },
+    });
+    if (!res.ok) return;
+    const rows = await res.json();
+    if (!Array.isArray(rows)) return;
+    for (const row of rows) {
+      const ip = row.ip;
+      if (!ip) continue;
+      const state = getIPState(ip);
+      if (row.is_permanent) {
+        state.permBlocked = true;
+        state.blocked = true;
+      } else if (row.blocked_until && new Date(row.blocked_until).getTime() > Date.now()) {
+        state.blocked = true;
+        state.blockedUntil = new Date(row.blocked_until).getTime();
+      }
+      state.score = Math.max(state.score, row.threat_score || 0);
+      SUPABASE_BLOCKED_CACHE.set(ip, Date.now());
+    }
+  } catch {}
+}
+
+setInterval(syncBlockedIPsFromSupabase, 30_000);
+syncBlockedIPsFromSupabase();
+
 // ═══════════════════════════════════════════════════════════
 // LAYER 1-100: MASTER IMMUNITY + CORE STATE
 // ═══════════════════════════════════════════════════════════
@@ -372,14 +452,17 @@ function applyDefense(ip, level) {
 
 function isIPBlocked(ip) {
   const state = IP_STATE.get(ip);
-  if (!state) return false;
-  if (state.permBlocked) return true;
-  if (state.blocked && Date.now() < state.blockedUntil) return true;
-  if (state.blocked && Date.now() >= state.blockedUntil) {
-    state.blocked = false; state.blockedUntil = 0;
-    state.score = Math.max(0, state.score - 30);
-    return false;
+  if (state) {
+    if (state.permBlocked) return true;
+    if (state.blocked && Date.now() < state.blockedUntil) return true;
+    if (state.blocked && Date.now() >= state.blockedUntil) {
+      state.blocked = false; state.blockedUntil = 0;
+      state.score = Math.max(0, state.score - 30);
+      return false;
+    }
   }
+  const cached = SUPABASE_BLOCKED_CACHE.get(ip);
+  if (cached && Date.now() - cached < SUPABASE_BLOCKED_TTL) return true;
   return false;
 }
 
@@ -520,6 +603,7 @@ function logThreat(ip, type, severity, detail, score) {
   RECENT_THREATS.unshift(entry);
   if (RECENT_THREATS.length > MAX_RECENT) RECENT_THREATS.length = MAX_RECENT;
   try { fs.appendFileSync(THREAT_LOG, JSON.stringify(entry) + '\n'); } catch {}
+  supabaseLogThreat(ip, type, severity, detail, score);
 }
 
 function getRecentThreats(limit = 200) { return RECENT_THREATS.slice(0, limit); }
@@ -1145,6 +1229,24 @@ export function manualBlockIP(ip, perm = false) {
   state.permBlocked = perm; state.blocked = true;
   if (!perm) state.blockedUntil = Date.now() + 86400_000;
   logThreat(ip, 'MANUAL_BLOCK', 'critical', `Manual block (perm=${perm})`, state.score);
+  try {
+    fetch(`${SUPABASE_URL}/rest/v1/blocked_ips`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=merge-duplicates',
+      },
+      body: JSON.stringify({
+        ip,
+        reason: `Manual block (perm=${perm})`,
+        is_permanent: perm,
+        blocked_until: perm ? null : new Date(Date.now() + 86400_000).toISOString(),
+        threat_score: state.score,
+      }),
+    }).catch(() => {});
+  } catch {}
 }
 
 export function manualUnblockIP(ip) {
@@ -1154,6 +1256,16 @@ export function manualUnblockIP(ip) {
     state.score = Math.max(0, state.score - 50);
     logThreat(ip, 'MANUAL_UNBLOCK', 'low', 'Manual unblock', state.score);
   }
+  SUPABASE_BLOCKED_CACHE.delete(ip);
+  try {
+    fetch(`${SUPABASE_URL}/rest/v1/blocked_ips?ip=eq.${encodeURIComponent(ip)}`, {
+      method: 'DELETE',
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      },
+    }).catch(() => {});
+  } catch {}
 }
 
 export function manualClearThreats() {

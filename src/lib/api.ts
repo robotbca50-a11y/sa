@@ -20,6 +20,8 @@ import type {
   ReportRow,
 } from '../types';
 
+const API_BASE = 'https://sa-production-244d.up.railway.app';
+
 function unwrap<T>(r: { data: T | null; error: any }, fallback: T): T {
   if (r.error) throw r.error;
   return (r.data ?? fallback) as T;
@@ -62,6 +64,58 @@ export function isBrowserRegistered(): boolean {
   } catch {
     return false;
   }
+}
+
+// ─── SERVER ADMIN RPC (password never leaves server) ──────
+let _adminSecret = '';
+export function setAdminSecret(s: string) { _adminSecret = s; }
+export function getAdminSecret() { return _adminSecret; }
+
+export async function serverAdminRpc(name: string, args: Record<string, unknown> = {}, retries = 3) {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'x-admin-secret': _adminSecret,
+  };
+  const token = loadToken();
+  if (token) headers['x-nexus-token'] = token;
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/rpc`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ fn: name, args, secret: _adminSecret }),
+    });
+    const text = await res.text();
+    let data: unknown = null;
+    if (text) {
+      try { data = JSON.parse(text); } catch { data = text; }
+    }
+    if (!res.ok) {
+      const bodyErr = (data && typeof data === 'object' && (data as { message?: unknown; error?: unknown }).error) || text;
+      const msg = String(bodyErr || `HTTP ${res.status}`);
+      if (retries > 0 && /terlalu banyak permintaan/i.test(msg)) {
+        await new Promise((r) => setTimeout(r, 600 + Math.random() * 600));
+        return serverAdminRpc(name, args, retries - 1);
+      }
+      return { data: null, error: { message: msg } };
+    }
+    return { data, error: null };
+  } catch (e) {
+    return { data: null, error: { message: e instanceof Error ? e.message : String(e) } };
+  }
+}
+
+export async function rpcAdminReports(): Promise<ReportRow[]> {
+  const { data, error } = await serverAdminRpc('admin_reports', { p_status: 'open' });
+  if (error) throw new Error(normalizeErr(error.message));
+  return (data as unknown as ReportRow[]) ?? [];
+}
+
+export async function rpcResolveReport(reportId: string, status: string) {
+  const { error } = await serverAdminRpc('resolve_report', {
+    p_report_id: reportId,
+    p_status: status,
+  });
+  if (error) throw new Error(normalizeErr(error.message));
 }
 
 export async function nxRpc(name: string, args: Record<string, unknown> = {}, retries = 3) {
@@ -211,26 +265,6 @@ export async function rpcReportUser(targetId: string, reason: string, detail?: s
   if (error) throw new Error(normalizeErr(error.message));
 }
 
-export async function rpcAdminReports(adminUser: string, adminPass: string, status = 'open'): Promise<ReportRow[]> {
-  const { data, error } = await nxRpc('admin_reports', {
-    p_admin_username: adminUser,
-    p_admin_password: adminPass,
-    p_status: status,
-  });
-  if (error) throw new Error(normalizeErr(error.message));
-  return (data as unknown as ReportRow[]) ?? [];
-}
-
-export async function rpcResolveReport(adminUser: string, adminPass: string, reportId: string, status: string) {
-  const { error } = await nxRpc('resolve_report', {
-    p_admin_username: adminUser,
-    p_admin_password: adminPass,
-    p_report_id: reportId,
-    p_status: status,
-  });
-  if (error) throw new Error(normalizeErr(error.message));
-}
-
 export async function rpcAiBrainSave(payload: unknown, trained: number) {
   const { error } = await nxRpc('ai_brain_save', { p_payload: payload, p_trained: trained });
   if (error) throw new Error(normalizeErr(error.message));
@@ -255,87 +289,57 @@ export async function rpcGetBlackoutIp(): Promise<boolean> {
   return !!data;
 }
 
-export async function rpcSetBlackout(adminUser: string, adminPass: string, userId: string, active: boolean) {
-  const { error } = await nxRpc('set_blackout', {
-    p_admin_username: adminUser,
-    p_admin_password: adminPass,
+export async function rpcSetBlackout(userId: string, active: boolean) {
+  const { error } = await serverAdminRpc('set_blackout', {
     p_target_user_id: userId,
     p_active: active,
   });
   if (error) throw new Error(normalizeErr(error.message));
 }
 
-export async function rpcListBlackouts(
-  adminUser: string,
-  adminPass: string,
-): Promise<{ target_user_id: string; updated_at: string }[]> {
-  const { data, error } = await nxRpc('list_blackouts', {
-    p_admin_username: adminUser,
-    p_admin_password: adminPass,
-  });
+export async function rpcListBlackouts(): Promise<{ target_user_id: string; updated_at: string }[]> {
+  const { data, error } = await serverAdminRpc('list_blackouts', {});
   if (error) throw new Error(normalizeErr(error.message));
   return (data as { target_user_id: string; updated_at: string }[]) ?? [];
 }
 
-export async function rpcPendingUsers(adminUser: string, adminPass: string): Promise<User[]> {
-  const { data, error } = await nxRpc('list_pending_users', {
-    p_admin_username: adminUser,
-    p_admin_password: adminPass,
-  });
+export async function rpcPendingUsers(): Promise<User[]> {
+  const { data, error } = await serverAdminRpc('list_pending_users', {});
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as User[]) ?? [];
 }
 
 export async function rpcSetUserStatus(
-  adminUser: string,
-  adminPass: string,
   targetId: string,
   status: 'approved' | 'rejected',
 ) {
-  const { error } = await nxRpc('set_user_status', {
-    p_admin_username: adminUser,
-    p_admin_password: adminPass,
+  const { error } = await serverAdminRpc('set_user_status', {
     p_target_id: targetId,
     p_status: status,
   });
   if (error) throw new Error(normalizeErr(error.message));
 }
 
-export async function rpcAdminCheck(adminUser: string, adminPass: string) {
-  const { data, error } = await nxRpc('admin_check', {
-    p_admin_username: adminUser,
-    p_admin_password: adminPass,
-  });
+export async function rpcAdminCheck() {
+  const { data, error } = await serverAdminRpc('admin_check', {});
   if (error) throw new Error(normalizeErr(error.message));
   return !!data;
 }
 
-export async function rpcAllLocations(adminUser: string, adminPass: string): Promise<LocRow[]> {
-  const { data, error } = await nxRpc('get_all_locations', {
-    p_admin_username: adminUser,
-    p_admin_password: adminPass,
-  });
+export async function rpcAllLocations(): Promise<LocRow[]> {
+  const { data, error } = await serverAdminRpc('get_all_locations', {});
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as LocRow[]) ?? [];
 }
 
-export async function rpcAccessLogs(adminUser: string, adminPass: string): Promise<AccessLog[]> {
-  const { data, error } = await nxRpc('get_access_logs', {
-    p_admin_username: adminUser,
-    p_admin_password: adminPass,
-  });
+export async function rpcAccessLogs(): Promise<AccessLog[]> {
+  const { data, error } = await serverAdminRpc('get_access_logs', {});
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as AccessLog[]) ?? [];
 }
 
-export async function rpcUserStats(
-  adminUser: string,
-  adminPass: string,
-): Promise<{ total: number; pending: number; online: number; today: number }> {
-  const { data, error } = await nxRpc('get_user_stats', {
-    p_admin_username: adminUser,
-    p_admin_password: adminPass,
-  });
+export async function rpcUserStats(): Promise<{ total: number; pending: number; online: number; today: number }> {
+  const { data, error } = await serverAdminRpc('get_user_stats', {});
   if (error) throw new Error(normalizeErr(error.message));
   const r = (data as any) ?? {};
   return {
@@ -346,29 +350,21 @@ export async function rpcUserStats(
   };
 }
 
-export async function rpcAllUsers(adminUser: string, adminPass: string): Promise<User[]> {
-  const { data, error } = await nxRpc('list_all_users', {
-    p_admin_username: adminUser,
-    p_admin_password: adminPass,
-  });
+export async function rpcAllUsers(): Promise<User[]> {
+  const { data, error } = await serverAdminRpc('list_all_users', {});
   if (error) throw new Error(normalizeErr(error.message));
   return (data as unknown as User[]) ?? [];
 }
 
-export async function rpcDeleteUser(adminUser: string, adminPass: string, targetId: string) {
-  const { error } = await nxRpc('delete_user', {
-    p_admin_username: adminUser,
-    p_admin_password: adminPass,
+export async function rpcDeleteUser(targetId: string) {
+  const { error } = await serverAdminRpc('delete_user', {
     p_target_id: targetId,
   });
   if (error) throw new Error(normalizeErr(error.message));
 }
 
-export async function rpcPurgeAllUsers(adminUser: string, adminPass: string) {
-  const { error } = await nxRpc('purge_all_users_except_master', {
-    p_admin_username: adminUser,
-    p_admin_password: adminPass,
-  });
+export async function rpcPurgeAllUsers() {
+  const { error } = await serverAdminRpc('purge_all_users_except_master', {});
   if (error) throw new Error(normalizeErr(error.message));
 }
 

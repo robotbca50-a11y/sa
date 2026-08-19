@@ -64,6 +64,7 @@ app.use((req, res, next) => {
   if (req.path === '/api/hp/log') return next();
   if (req.path === '/api/admin/security') return next();
   if (req.path === '/api/admin/unquarantine') return next();
+  if (req.path === '/api/admin/rpc') return next();
   if (req.path === '/health' || req.path === '/api/health') return next();
   const uid = req.headers['x-nexus-user-id'] || null;
   const result = scanRequest(req, uid);
@@ -92,14 +93,57 @@ function clientIp(req) {
   return (req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown');
 }
 
-app.post('/api/admin/security', (req, res) => {
+app.post('/api/admin/security', async (req, res) => {
   const { action, ip, perm, secret, reason } = req.body || {};
   if (secret !== ADMIN_SECRET) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   switch (action) {
     case 'get_state':
-      return res.json(getSecurityState());
+      const state = getSecurityState();
+      try {
+        const evRes = await fetch(`${SUPABASE_URL}/rest/v1/security_events?select=*&order=created_at.desc&limit=200`, {
+          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+        });
+        if (evRes.ok) {
+          const dbEvents = await evRes.json();
+          if (Array.isArray(dbEvents) && dbEvents.length > 0) {
+            const mapped = dbEvents.map((e) => ({
+              time: e.created_at, ip: e.ip, type: e.event_type,
+              severity: e.severity, detail: e.detail || '', score: e.meta?.score || 0,
+            }));
+            const seen = new Set(state.threats.map((t) => t.time + t.ip + t.type));
+            for (const ev of mapped) {
+              if (!seen.has(ev.time + ev.ip + ev.type)) {
+                state.threats.unshift(ev);
+              }
+            }
+            state.threats.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+            if (state.threats.length > 500) state.threats.length = 500;
+          }
+        }
+      } catch {}
+      try {
+        const blRes = await fetch(`${SUPABASE_URL}/rest/v1/blocked_ips?select=*&or=(is_permanent.eq.true,blocked_until.gt.now())`, {
+          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+        });
+        if (blRes.ok) {
+          const dbBlocked = await blRes.json();
+          if (Array.isArray(dbBlocked)) {
+            const existingIPs = new Set(state.blockedIPs.map((b) => b.ip));
+            for (const b of dbBlocked) {
+              if (!existingIPs.has(b.ip)) {
+                state.blockedIPs.push({
+                  ip: b.ip, perm: b.is_permanent,
+                  until: b.blocked_until ? new Date(b.blocked_until).getTime() : 0,
+                  score: b.threat_score || 0,
+                });
+              }
+            }
+          }
+        }
+      } catch {}
+      return res.json(state);
     case 'block_ip':
       if (!ip) return res.status(400).json({ error: 'IP required' });
       manualBlockIP(ip, !!perm);
@@ -138,6 +182,52 @@ app.post('/api/admin/unquarantine', (req, res) => {
   if (!ip) return res.status(400).json({ error: 'IP required' });
   unquarantine(ip);
   return res.json({ ok: true, msg: `IP ${ip} unquarantined` });
+});
+
+// ─── ADMIN RPC PROXY (eliminates plain-text passwords from client) ──
+const ADMIN_RPC_WHITELIST = new Set([
+  'list_pending_users', 'set_user_status', 'delete_user',
+  'list_all_users', 'get_user_stats', 'get_all_locations',
+  'get_access_logs', 'set_blackout', 'list_blackouts',
+  'purge_all_users_except_master', 'admin_reports', 'resolve_report',
+  'get_security_events', 'admin_check',
+]);
+
+app.post('/api/admin/rpc', async (req, res) => {
+  const { secret } = req.headers || {};
+  const bodySecret = req.body?.secret;
+  if (secret !== ADMIN_SECRET && bodySecret !== ADMIN_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const { fn, args } = req.body || {};
+  if (!fn || !ADMIN_RPC_WHITELIST.has(fn)) {
+    return res.status(400).json({ error: 'Invalid function' });
+  }
+  const token = req.headers['x-nexus-token'];
+  if (!token) return res.status(401).json({ error: 'Sesi tidak valid. Login ulang.' });
+  try {
+    const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+        'x-nexus-token': token,
+      },
+      body: JSON.stringify(args || {}),
+    });
+    const text = await rpcRes.text();
+    let data = null;
+    if (text) {
+      try { data = JSON.parse(text); } catch { data = text; }
+    }
+    if (!rpcRes.ok) {
+      return res.status(rpcRes.status).json({ error: typeof data === 'string' ? data : (data?.message || 'RPC error') });
+    }
+    return res.json(data);
+  } catch (e) {
+    return res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 // ─── RATE LIMITS ────────────────────────────────────────────

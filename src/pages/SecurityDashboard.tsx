@@ -5,7 +5,7 @@
   sig://oktagram
 */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Shield, ShieldAlert, ShieldOff, Ban, RefreshCw, Trash2, ArrowLeft, AlertTriangle, Activity, Wifi, Eye, Power } from 'lucide-react';
 import NeonButton from '../components/NeonButton';
@@ -66,18 +66,18 @@ const SEVERITY_COLORS: Record<string, string> = {
 
 export default function SecurityDashboard() {
   const [secret, setSecret] = useState('');
-  const [logged, setLogged] = useState(!!sessionStorage.getItem('nexus:sec_dash'));
+  const [logged, setLogged] = useState(false);
   const [state, setState] = useState<SecurityState | null>(null);
   const [err, setErr] = useState('');
   const [tab, setTab] = useState<'live' | 'attackers' | 'blocked' | 'stats' | 'fortress'>('live');
   const [blockInput, setBlockInput] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(true);
-
-  const cred = () => sessionStorage.getItem('nexus:sec_dash') || '';
+  const secretRef = useRef('');
 
   async function doLogin() {
     setErr('');
     try {
+      secretRef.current = secret;
       const res = await fetch('/api/admin/security', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -86,8 +86,8 @@ export default function SecurityDashboard() {
       if (!res.ok) throw new Error('Unauthorized');
       const data = await res.json();
       setState(data);
-      sessionStorage.setItem('nexus:sec_dash', secret);
       setLogged(true);
+      setSecret('');
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     }
@@ -98,7 +98,7 @@ export default function SecurityDashboard() {
       const res = await fetch('/api/admin/security', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'get_state', secret: cred() }),
+        body: JSON.stringify({ action: 'get_state', secret: secretRef.current }),
       });
       if (res.ok) setState(await res.json());
     } catch {}
@@ -116,7 +116,7 @@ export default function SecurityDashboard() {
     await fetch('/api/admin/security', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'block_ip', ip, perm, secret: cred() }),
+      body: JSON.stringify({ action: 'block_ip', ip, perm, secret: secretRef.current }),
     });
     refresh();
   }
@@ -125,7 +125,7 @@ export default function SecurityDashboard() {
     await fetch('/api/admin/security', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'unblock_ip', ip, secret: cred() }),
+      body: JSON.stringify({ action: 'unblock_ip', ip, secret: secretRef.current }),
     });
     refresh();
   }
@@ -135,7 +135,7 @@ export default function SecurityDashboard() {
     await fetch('/api/admin/security', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'clear_all', secret: cred() }),
+      body: JSON.stringify({ action: 'clear_all', secret: secretRef.current }),
     });
     refresh();
   }
@@ -144,7 +144,7 @@ export default function SecurityDashboard() {
     await fetch('/api/admin/security', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'ban_ip', ip, secret: cred() }),
+      body: JSON.stringify({ action: 'ban_ip', ip, secret: secretRef.current }),
     });
     refresh();
   }
@@ -153,7 +153,7 @@ export default function SecurityDashboard() {
     await fetch('/api/admin/unquarantine', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ip, secret: cred() }),
+      body: JSON.stringify({ ip, secret: secretRef.current }),
     });
     refresh();
   }
@@ -163,7 +163,7 @@ export default function SecurityDashboard() {
     await fetch('/api/admin/security', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'kill_switch', secret: cred(), reason: 'admin_manual' }),
+      body: JSON.stringify({ action: 'kill_switch', secret: secretRef.current, reason: 'admin_manual' }),
     });
     refresh();
   }
@@ -172,7 +172,7 @@ export default function SecurityDashboard() {
     await fetch('/api/admin/security', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'kill_switch_off', secret: cred() }),
+      body: JSON.stringify({ action: 'kill_switch_off', secret: secretRef.current }),
     });
     refresh();
   }
@@ -182,24 +182,24 @@ export default function SecurityDashboard() {
     await fetch('/api/admin/security', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'kill_sessions', secret: cred() }),
+      body: JSON.stringify({ action: 'kill_sessions', secret: secretRef.current }),
     });
     refresh();
   }
 
   async function panicWipe() {
-    if (!confirm('⚠️ PANIC WIPE? Ini akan menghapus SEMUA data ancaman dan session. Tidak bisa dibatalkan.')) return;
+    if (!confirm('PANIC WIPE? Ini akan menghapus SEMUA data ancaman dan session. Tidak bisa dibatalkan.')) return;
     if (!confirm('ARE YOU SURE? This is IRREVERSIBLE.')) return;
     await fetch('/api/admin/security', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'panic_wipe', secret: cred() }),
+      body: JSON.stringify({ action: 'panic_wipe', secret: secretRef.current }),
     });
     refresh();
   }
 
   function logoutDash() {
-    sessionStorage.removeItem('nexus:sec_dash');
+    secretRef.current = '';
     setLogged(false);
     setState(null);
   }
