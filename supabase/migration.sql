@@ -437,9 +437,9 @@ returns text
 language sql stable
 as $$
   select coalesce(
-    nullif(current_setting('request.headers', true)::jsonb ->> 'cf-connecting-ip', ''),
-    nullif(split_part(coalesce(current_setting('request.headers', true)::jsonb ->> 'x-forwarded-for', ''), ',', 1), ''),
-    nullif(current_setting('request.headers', true)::jsonb ->> 'x-real-ip', ''),
+    nullif((nullif(current_setting('request.headers', true), ''))::jsonb ->> 'cf-connecting-ip', ''),
+    nullif(split_part(coalesce((nullif(current_setting('request.headers', true), ''))::jsonb ->> 'x-forwarded-for', ''), ',', 1), ''),
+    nullif((nullif(current_setting('request.headers', true), ''))::jsonb ->> 'x-real-ip', ''),
     '0.0.0.0'
   );
 $$;
@@ -522,7 +522,7 @@ declare
   v_token text;
   v_uid uuid;
 begin
-  v_token := nullif(current_setting('request.headers', true)::jsonb ->> 'x-nexus-token', '');
+  v_token := nullif((nullif(current_setting('request.headers', true), ''))::jsonb ->> 'x-nexus-token', '');
   if v_token is null then
     return null;
   end if;
@@ -2415,7 +2415,7 @@ declare v_uid uuid; v_token text; v_count int; v_epoch bigint;
 begin
   perform public.rate_limit();
   v_uid := public.require_auth();
-  v_token := nullif(current_setting('request.headers', true)::jsonb ->> 'x-nexus-token', '');
+  v_token := nullif((nullif(current_setting('request.headers', true), ''))::jsonb ->> 'x-nexus-token', '');
   delete from public.sessions
   where user_id = v_uid
     and (v_token is null or token_hash <> encode(digest(v_token, 'sha256'), 'hex'));
