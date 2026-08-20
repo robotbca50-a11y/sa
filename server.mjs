@@ -202,7 +202,7 @@ const ADMIN_RPC_WHITELIST = new Set([
 ]);
 
 app.post('/api/admin/rpc', async (req, res) => {
-  const { secret } = req.headers || {};
+  const secret = req.headers['x-admin-secret'];
   const bodySecret = req.body?.secret;
   if (!timingSafeCompare(secret, ADMIN_SECRET) && !timingSafeCompare(bodySecret, ADMIN_SECRET)) {
     return res.status(401).json({ error: 'Unauthorized' });
