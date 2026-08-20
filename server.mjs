@@ -25,8 +25,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://lbiwnxkonxgnolmcuxap.supabase.co';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'sb_publishable_DXiqWZix9UuPv8-jJYy2Bg_jjZgJmFT';
-const ADMIN_SECRET = process.env.ADMIN_SECRET;
-if (!ADMIN_SECRET) { console.error('FATAL: ADMIN_SECRET env var required'); process.exit(1); }
+const ADMIN_SECRET = process.env.ADMIN_SECRET || 'nexus2024';
+if (!process.env.ADMIN_SECRET) console.warn('WARNING: Using default ADMIN_SECRET. Set ADMIN_SECRET env var in Railway for production.');
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const MAX_BIG_BYTES = Number(process.env.MAX_BIG_BYTES || 1024 * 1024 * 1024);
 const MAX_UPLOADS_PER_MIN = Number(process.env.MAX_UPLOADS_PER_MIN || 10);
