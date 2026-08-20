@@ -9,13 +9,29 @@ import { useEffect, useRef, useState } from 'react';
 import Glitch from './Glitch';
 
 const VIDEOS = [
+  '/vidios/103434-662525884_medium.mp4',
   '/vidios/130911-748586188_medium.mp4',
+  '/vidios/185498-875752971_medium.mp4',
   '/vidios/186363-877727695_medium.mp4',
   '/vidios/199741-911047189_medium.mp4',
   '/vidios/200065-911902193_medium.mp4',
+  '/vidios/214500_medium.mp4',
+  '/vidios/214940_medium.mp4',
   '/vidios/23154-333321334_medium.mp4',
+  '/vidios/240841_medium.mp4',
   '/vidios/264826_medium.mp4',
+  '/vidios/270408_medium.mp4',
+  '/vidios/283431_medium.mp4',
+  '/vidios/285203_medium.mp4',
+  '/vidios/352156_medium.mp4',
+  '/vidios/352949_medium.mp4',
+  '/vidios/65881-515617533_medium.mp4',
   '/vidios/73654-549527823_medium.mp4',
+  '/vidios/90408-626004752_medium.mp4',
+  '/vidios/91562-629172467_medium.mp4',
+  '/vidios/g3.mp4',
+  '/vidios/komaru_gif_AgADyAYAAlt56EY.mp4',
+  '/vidios/video_2026-08-09_06-32-20.mp4',
 ];
 
 const DURATION = 4000;
