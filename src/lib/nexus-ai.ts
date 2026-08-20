@@ -7,7 +7,13 @@
 const STORAGE_KEY = 'nexus:nexusai';
 const API_KEY = 'b1ffab56f91343cebb31d3e40c43ad54.9tFHCtoDIj-dy2UIBeUeeXEH';
 const API_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const MODEL = 'meta-llama/llama-3.1-8b-instruct:free';
+
+const MODELS = {
+  primary: 'google/gemma-4-31b-it:free',
+  secondary: 'nvidia/nemotron-3-super-120b-a12b:free',
+  fallback: 'meta-llama/llama-3.1-8b-instruct:free',
+} as const;
+type ModelTier = keyof typeof MODELS;
 const MAX_SESSIONS = 10;
 const TOTAL_DAYS = 730;
 
@@ -156,21 +162,27 @@ export async function callAi(prompt: string, system?: string): Promise<string> {
   const messages: Array<{ role: string; content: string }> = [];
   if (system) messages.push({ role: 'system', content: system });
   messages.push({ role: 'user', content: prompt });
-  try {
-    const res = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${API_KEY}`,
-        'HTTP-Referer': 'https://nexus-chat.app',
-        'X-Title': 'NEXUS AI',
-      },
-      body: JSON.stringify({ model: MODEL, messages, max_tokens: 500, temperature: 0.7 }),
-    });
-    if (!res.ok) return '';
-    const j = await res.json();
-    return j?.choices?.[0]?.message?.content?.trim() || '';
-  } catch { return ''; }
+
+  const tiers: ModelTier[] = ['primary', 'secondary', 'fallback'];
+  for (const tier of tiers) {
+    try {
+      const res = await fetch(API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${API_KEY}`,
+          'HTTP-Referer': 'https://nexus-chat.app',
+          'X-Title': 'NEXUS AI',
+        },
+        body: JSON.stringify({ model: MODELS[tier], messages, max_tokens: 800, temperature: 0.7 }),
+      });
+      if (!res.ok) continue;
+      const j = await res.json();
+      const content = j?.choices?.[0]?.message?.content?.trim();
+      if (content) return content;
+    } catch { continue; }
+  }
+  return '';
 }
 
 export async function generateQuestion(topic: string, day: number, history: NexusAiState['history']): Promise<string> {

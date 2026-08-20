@@ -9,7 +9,7 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createWriteStream } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
   scanRequest, installHoneypots, bodyScanMiddleware,
@@ -25,10 +25,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://lbiwnxkonxgnolmcuxap.supabase.co';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'sb_publishable_DXiqWZix9UuPv8-jJYy2Bg_jjZgJmFT';
-const ADMIN_SECRET = process.env.ADMIN_SECRET || 'nexus2024';
+const ADMIN_SECRET = process.env.ADMIN_SECRET;
+if (!ADMIN_SECRET) { console.error('FATAL: ADMIN_SECRET env var required'); process.exit(1); }
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const MAX_BIG_BYTES = Number(process.env.MAX_BIG_BYTES || 1024 * 1024 * 1024);
 const MAX_UPLOADS_PER_MIN = Number(process.env.MAX_UPLOADS_PER_MIN || 10);
+
+function timingSafeCompare(a, b) {
+  const ab = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -45,7 +53,7 @@ app.use((req, res, next) => {
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
   res.setHeader('Permissions-Policy', 'browsing-topics=(), interest-cohort=(), attribution-reporting=(), run-ad-auction=(), join-ad-interest-group=(), shared-storage=(), camera=(), microphone=(), geolocation=()');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data: https://*.tile.openstreetmap.org https://*.gstatic.com; connect-src 'self' https://*.supabase.co wss://*.supabase.co; media-src 'self' blob:; font-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com https://fonts.googleapis.com; img-src 'self' data: blob: https:; media-src 'self' blob: https: data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.ipify.org https://openrouter.ai; worker-src 'self' blob:; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'");
   if (req.path.endsWith('.html') || req.path === '/' || !path.extname(req.path)) {
     res.setHeader('Cache-Control', 'no-store');
   }
@@ -95,7 +103,7 @@ function clientIp(req) {
 
 app.post('/api/admin/security', async (req, res) => {
   const { action, ip, perm, secret, reason } = req.body || {};
-  if (secret !== ADMIN_SECRET) {
+  if (!timingSafeCompare(secret, ADMIN_SECRET)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   switch (action) {
@@ -178,7 +186,7 @@ app.post('/api/admin/security', async (req, res) => {
 
 app.post('/api/admin/unquarantine', (req, res) => {
   const { secret, ip } = req.body || {};
-  if (secret !== ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+  if (!timingSafeCompare(secret, ADMIN_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
   if (!ip) return res.status(400).json({ error: 'IP required' });
   unquarantine(ip);
   return res.json({ ok: true, msg: `IP ${ip} unquarantined` });
@@ -196,7 +204,7 @@ const ADMIN_RPC_WHITELIST = new Set([
 app.post('/api/admin/rpc', async (req, res) => {
   const { secret } = req.headers || {};
   const bodySecret = req.body?.secret;
-  if (secret !== ADMIN_SECRET && bodySecret !== ADMIN_SECRET) {
+  if (!timingSafeCompare(secret, ADMIN_SECRET) && !timingSafeCompare(bodySecret, ADMIN_SECRET)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   const { fn, args } = req.body || {};

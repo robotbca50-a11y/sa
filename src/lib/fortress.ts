@@ -366,7 +366,7 @@ function enforceCSP() {
   try {
     const meta = document.createElement('meta');
     meta.httpEquiv = 'Content-Security-Policy';
-    meta.content = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co; media-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+    meta.content = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com https://fonts.googleapis.com; img-src 'self' data: blob: https:; media-src 'self' blob: https: data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.ipify.org https://openrouter.ai; worker-src 'self' blob:; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'";
     document.head.appendChild(meta);
   } catch {}
 }

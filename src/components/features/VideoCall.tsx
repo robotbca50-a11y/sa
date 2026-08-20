@@ -14,7 +14,15 @@ import { useStore } from '../../lib/store';
 import type { User } from '../../types';
 import Avatar from '../Avatar';
 
-const RTC_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+const RTC_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+  ],
+};
 
 export default function VideoCall({ mode, peer, onClose }: { mode: 'caller' | 'callee'; peer: User; onClose: () => void }) {
   const me = useStore((s) => s.me);
@@ -86,6 +94,13 @@ export default function VideoCall({ mode, peer, onClose }: { mode: 'caller' | 'c
             if (stageRef.current !== 'ringing') return;
             send('call-invite', {});
           }, 5000);
+          const timeout = window.setTimeout(() => {
+            if (!closed && stageRef.current === 'ringing') {
+              send('call-hangup', {});
+              endCall();
+            }
+          }, 45000);
+          window.setTimeout(() => window.clearTimeout(timeout), 50000);
         } else {
           send('call-ready', {});
         }

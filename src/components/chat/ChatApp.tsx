@@ -135,6 +135,7 @@ export default function ChatApp() {
   const msgMapRef = useRef(msgMap);
   const keyMapRef = useRef(keyMap);
   const userMapRef = useRef<Record<string, string>>({});
+  const usersRef = useRef<User[]>([]);
   const userKeysRef = useRef<Record<string, string[]>>({});
   const lastKeyFetchRef = useRef(0);
   const incomingFromRef = useRef<string | null>(null);
@@ -155,6 +156,7 @@ export default function ChatApp() {
   msgMapRef.current = msgMap;
   keyMapRef.current = keyMap;
   userMapRef.current = Object.fromEntries(users.map((u) => [u.id, u.username]));
+  usersRef.current = users;
   groupCallRef.current = groupCall;
   incomingGroupCallRef.current = incomingGroupCall;
 
@@ -306,7 +308,7 @@ export default function ChatApp() {
     const offCall = onCall((event, data) => {
       if (event === 'call-invite' && data.to === meRef.current?.id && !inCallRef.current) {
         const from = data.from;
-        const fromUser = users.find((u) => u.id === from);
+        const fromUser = usersRef.current.find((u) => u.id === from);
         if (fromUser) {
           if (incomingFromRef.current === from) return;
           incomingFromRef.current = from;
@@ -333,7 +335,7 @@ export default function ChatApp() {
         if (incomingGroupCallRef.current?.callId === data.callId) return;
         const g = groupsRef.current.find((x) => x.id === data.groupId);
         const mems: User[] = (data.members ?? []).map((id: string) => {
-          const u = users.find((x) => x.id === id);
+          const u = usersRef.current.find((x) => x.id === id);
           return u ?? { id, username: id.slice(0, 8) };
         });
         const inc = { callId: data.callId, groupId: data.groupId, groupName: g?.name ?? 'Grup', initiator: data.from, members: mems };

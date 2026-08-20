@@ -141,11 +141,10 @@ export function sendCall(payload: any) {
 
 export function onCall(cb: (event: string, data: any) => void) {
   let active = true;
-  const handler = ({ payload }: any) => {
-    if (active) cb(payload.event, payload.data);
-  };
   ['call-invite', 'call-offer', 'call-answer', 'call-ice', 'call-hangup', 'call-cancel'].forEach((ev) => {
-    live().on('broadcast', { event: ev }, handler);
+    live().on('broadcast', { event: ev }, ({ payload }: any) => {
+      if (active) cb(ev, payload);
+    });
   });
   return () => {
     active = false;
