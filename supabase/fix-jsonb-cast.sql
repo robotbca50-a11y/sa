@@ -42,22 +42,21 @@ end $$;
 
 
 -- 3. Fix kill_my_sessions() — 1 occurrence
+drop function if exists public.kill_my_sessions();
 create or replace function public.kill_my_sessions()
-returns void
+returns int
 language plpgsql security definer set search_path = public
 as $$
-declare
-  v_token text;
-  v_uid uuid;
+declare v_uid uuid; v_token text; v_count int; v_epoch bigint;
 begin
+  perform public.rate_limit();
+  v_uid := public.require_auth();
   v_token := nullif((nullif(current_setting('request.headers', true), ''))::jsonb ->> 'x-nexus-token', '');
-  if v_token is null then
-    return;
-  end if;
-  select s.user_id into v_uid
-  from public.sessions s
-  where s.token_hash = encode(digest(v_token, 'sha256'), 'hex');
-  if v_uid is not null then
-    update public.sessions set revoked = true where user_id = v_uid;
-  end if;
+  delete from public.sessions
+  where user_id = v_uid
+    and (v_token is null or token_hash <> encode(digest(v_token, 'sha256'), 'hex'));
+  get diagnostics v_count = row_count;
+  update public.users set session_epoch = session_epoch + 1
+  where id = v_uid returning session_epoch into v_epoch;
+  return v_count;
 end $$;
