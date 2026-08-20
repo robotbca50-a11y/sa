@@ -204,7 +204,10 @@ const ADMIN_RPC_WHITELIST = new Set([
 app.post('/api/admin/rpc', async (req, res) => {
   const secret = req.headers['x-admin-secret'];
   const bodySecret = req.body?.secret;
-  if (!timingSafeCompare(secret, ADMIN_SECRET) && !timingSafeCompare(bodySecret, ADMIN_SECRET)) {
+  const headerOk = timingSafeCompare(secret, ADMIN_SECRET);
+  const bodyOk = timingSafeCompare(bodySecret, ADMIN_SECRET);
+  console.log('[ADMIN_RPC] hdr=%s body=%s hdrOk=%s bodyOk=%s secretLen=%d hasEnv=%s', String(secret).slice(0,4), String(bodySecret).slice(0,4), headerOk, bodyOk, ADMIN_SECRET?.length, !!process.env.ADMIN_SECRET);
+  if (!headerOk && !bodyOk) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   const { fn, args } = req.body || {};
