@@ -28,6 +28,7 @@
     { "source": "/api/upload", "destination": "https://sa-production-244d.up.railway.app/api/upload" },
     { "source": "/api/media/(.*)", "destination": "https://sa-production-244d.up.railway.app/api/media/$1" },
     { "source": "/media/(.*)", "destination": "https://sa-production-244d.up.railway.app/media/$1" },
-    { "source": "/api/(.*)", "destination": "https://sa-production-244d.up.railway.app/api/$1" }
+    { "source": "/api/(.*)", "destination": "https://sa-production-244d.up.railway.app/api/$1" },
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
