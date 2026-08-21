@@ -9,6 +9,7 @@ const _k = 'c2stb3ItdjEtZWIzNDZhZWE1ZTE1MTdkOTM4M2FmZTMyZjJmZTE3Yzg3ZDI2MGNhMGQz
 const API_KEY = atob(_k);
 const API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 let aiDisabled = false;
+let aiCooldownUntil = 0;
 
 const MODELS = {
   primary: 'google/gemma-4-31b-it:free',
@@ -177,6 +178,7 @@ function isRefusal(text: string): boolean {
 
 export async function callAi(prompt: string, system?: string): Promise<string> {
   if (aiDisabled) return '';
+  if (Date.now() < aiCooldownUntil) return '';
   const enrichedSystem = system
     ? `${system} Kamu adalah asisten yang selalu memberikan jawaban yang informatif, detail, dan membantu. Jangan pernah menolak menjawab pertanyaan. Selalu berikan jawaban terbaikmu.`
     : 'Kamu adalah NEXUS AI, asisten cerdas yang selalu membantu. Jawab semua pertanyaan dengan informatif, detail, dan dalam Bahasa Indonesia. Jangan pernah menolak menjawab.';
@@ -203,6 +205,7 @@ export async function callAi(prompt: string, system?: string): Promise<string> {
       });
       if (!res.ok) {
         if (res.status === 401 || res.status === 403) { aiDisabled = true; break; }
+        if (res.status === 429) { aiCooldownUntil = Date.now() + 30_000; break; }
         continue;
       }
       const j = await res.json();
