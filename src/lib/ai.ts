@@ -231,7 +231,9 @@ export function translatePhrase(text: string, to: 'id' | 'en'): string {
   return out;
 }
 
+let aiProxyDisabled = false;
 export async function aiModel(prompt: string, system?: string): Promise<string | null> {
+  if (aiProxyDisabled) return null;
   try {
     const { loadToken } = await import('./session');
     const { SUPABASE_URL, SUPABASE_ANON_KEY } = await import('./supabase');
@@ -247,6 +249,10 @@ export async function aiModel(prompt: string, system?: string): Promise<string |
       },
       body: JSON.stringify({ prompt, system }),
     });
+    if (res.status === 404 || res.status === 501) {
+      aiProxyDisabled = true;
+      return null;
+    }
     const j = await res.json();
     if (!res.ok || !j.ok) return null;
     return typeof j.text === 'string' ? j.text : null;

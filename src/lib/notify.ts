@@ -31,10 +31,11 @@ export function needsIOSInstall() {
 }
 
 export async function warmPush(): Promise<void> {
+  if (pushDisabled) return;
   const token = loadToken();
   if (!token) return;
   try {
-    await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
       method: 'POST',
       headers: {
         apikey: SUPABASE_ANON_KEY,
@@ -44,6 +45,9 @@ export async function warmPush(): Promise<void> {
       },
       body: JSON.stringify({ warm: true }),
     });
+    if (res.status === 404 || res.status === 501) {
+      pushDisabled = true;
+    }
   } catch {
   }
 }
@@ -137,12 +141,16 @@ export async function unsubscribePush(): Promise<void> {
   }
 }
 
+let pushDisabled = false;
+export function resetPushDisabled() { pushDisabled = false; }
+
 export async function triggerPush(recipientIds: string[], title: string, body: string, url = '/', convId?: string) {
+  if (pushDisabled) return;
   if (!recipientIds.length) return;
   const token = loadToken();
   if (!token || !recipientIds.length) return;
   try {
-    await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
       method: 'POST',
       headers: {
         apikey: SUPABASE_ANON_KEY,
@@ -152,6 +160,9 @@ export async function triggerPush(recipientIds: string[], title: string, body: s
       },
       body: JSON.stringify({ user_ids: recipientIds.slice(0, 50), title, body, url, convId }),
     });
+    if (res.status === 404 || res.status === 501) {
+      pushDisabled = true;
+    }
   } catch {
   }
 }
