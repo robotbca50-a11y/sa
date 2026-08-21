@@ -22,6 +22,7 @@
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
     "@supabase/supabase-js": "^2.45.4",
+    "@vercel/speed-insights": "^2.0.0",
     "express": "^5.2.1",
     "framer-motion": "^11.5.4",
     "leaflet": "^1.9.4",
