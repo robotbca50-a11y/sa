@@ -26,6 +26,7 @@ android/local.properties
 
 # APK hasil build (besar, bisa direproduksi)
 *.apk
+/*.mp4
 
 
 _sbjs_test.mjs
