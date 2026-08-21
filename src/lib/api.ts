@@ -20,7 +20,10 @@ import type {
   ReportRow,
 } from '../types';
 
-const API_BASE = 'https://sa-production-244d.up.railway.app';
+const RAILWAY_URL = 'https://sa-production-244d.up.railway.app';
+const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+  ? RAILWAY_URL
+  : window.location.origin.endsWith('.vercel.app') ? '' : RAILWAY_URL;
 
 function unwrap<T>(r: { data: T | null; error: any }, fallback: T): T {
   if (r.error) throw r.error;
@@ -939,7 +942,7 @@ export async function uploadMedia(bucket: string, path: string, blob: Blob, user
   if (error) throw new Error(normalizeErr(error.message));
 }
 
-export const MEDIA_BASE = 'https://sa-production-244d.up.railway.app';
+export const MEDIA_BASE = API_BASE;
 const MAX_BIG_UPLOAD_BYTES = 1024 * 1024 * 1024;
 const CHUNK = 4 * 1024 * 1024;
 
